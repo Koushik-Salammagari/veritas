@@ -4,103 +4,131 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Veritas</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;700;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
   <header>
+    <p class="eyebrow">Investigation Room</p>
     <h1>Veritas</h1>
     <p class="tagline">Gemini gives you an opinion. Veritas runs an investigation, then shows you the truth.</p>
   </header>
 
+  <nav class="step-indicator" id="step-indicator" aria-label="Investigation progress">
+    <button type="button" class="step" data-step="start">
+      <span class="step-num">1</span><span class="step-label">Start</span>
+    </button>
+    <span class="step-connector" aria-hidden="true"></span>
+    <button type="button" class="step" data-step="investigation" disabled>
+      <span class="step-num">2</span><span class="step-label">Investigation</span>
+    </button>
+    <span class="step-connector" aria-hidden="true"></span>
+    <button type="button" class="step" data-step="report" disabled>
+      <span class="step-num">3</span><span class="step-label">Report</span>
+    </button>
+  </nav>
+
+  <p id="replay-banner" class="replay-banner" hidden>
+    🔁 <strong>Replay of a real run</strong> — recorded <span id="replay-banner-date"></span>, this is not live.
+    <button type="button" id="replay-banner-close">Start a new live run</button>
+  </p>
+
   <main>
-    <p id="replay-banner" class="replay-banner" hidden>
-      🔁 <strong>Replay of a real run</strong> — recorded <span id="replay-banner-date"></span>, this is not live.
-      <button type="button" id="replay-banner-close">Start a new live run</button>
-    </p>
-
-    <section class="input-card">
-      <div class="tabs">
-        <button class="tab-btn active" data-tab="youtube">YouTube link</button>
-        <button class="tab-btn" data-tab="upload">Upload video</button>
-      </div>
-
-      <form id="claim-form">
-        <div class="tab-panel" data-panel="youtube">
-          <input type="url" id="youtube-url" name="youtube_url" placeholder="https://www.youtube.com/watch?v=..." />
+    <section class="screen" id="screen-start" data-screen="start">
+      <section class="input-card">
+        <div class="tabs">
+          <button class="tab-btn active" data-tab="youtube">YouTube link</button>
+          <button class="tab-btn" data-tab="upload">Upload video</button>
         </div>
-        <div class="tab-panel" data-panel="upload" hidden>
-          <input type="file" id="video-file" name="video" accept="video/*" />
+
+        <form id="claim-form">
+          <div class="tab-panel" data-panel="youtube">
+            <input type="url" id="youtube-url" name="youtube_url" placeholder="https://www.youtube.com/watch?v=..." />
+          </div>
+          <div class="tab-panel" data-panel="upload" hidden>
+            <input type="file" id="video-file" name="video" accept="video/*" />
+          </div>
+          <button type="submit" id="submit-btn">Investigate</button>
+        </form>
+
+        <p id="status" class="status" hidden></p>
+      </section>
+
+      <section id="past-runs-section">
+        <div class="trace-header">
+          <h2>Past investigations</h2>
+          <button type="button" id="past-runs-refresh-btn" class="trace-toggle">Refresh</button>
         </div>
-        <button type="submit" id="submit-btn">Investigate</button>
-      </form>
-
-      <p id="status" class="status" hidden></p>
+        <p id="past-runs-empty" class="section-hint">No saved runs yet — run an investigation to save one.</p>
+        <div id="past-runs-list" class="past-runs-list"></div>
+      </section>
     </section>
 
-    <section id="past-runs-section">
-      <div class="trace-header">
-        <h2>Past investigations</h2>
-        <button type="button" id="past-runs-refresh-btn" class="trace-toggle">Refresh</button>
-      </div>
-      <p id="past-runs-empty" class="section-hint">No saved runs yet — run an investigation to save one.</p>
-      <div id="past-runs-list" class="past-runs-list"></div>
+    <section class="screen" id="screen-investigation" data-screen="investigation" hidden>
+      <p class="eyebrow">Live Investigation</p>
+      <p id="trace-status" class="status" hidden></p>
+
+      <section id="trace-section" hidden>
+        <div class="trace-header">
+          <h2>Pipeline trace</h2>
+          <button type="button" id="trace-toggle-btn" class="trace-toggle" hidden>Collapse</button>
+        </div>
+        <p id="trace-summary-line" class="trace-summary-line" hidden></p>
+        <div id="trace-grid" class="trace-grid"></div>
+      </section>
+
+      <section id="results" hidden>
+        <h2>Claims found</h2>
+        <table id="claims-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Timestamp</th>
+              <th>Speaker</th>
+              <th>Claim</th>
+              <th>Type</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </section>
     </section>
 
-    <section id="trace-section" hidden>
-      <div class="trace-header">
-        <h2>Pipeline trace</h2>
-        <button type="button" id="trace-toggle-btn" class="trace-toggle" hidden>Collapse</button>
-      </div>
-      <p id="trace-summary-line" class="trace-summary-line" hidden></p>
-      <div id="trace-grid" class="trace-grid"></div>
-    </section>
+    <section class="screen" id="screen-report" data-screen="report" hidden>
+      <section id="video-verdict-banner" hidden>
+        <p class="eyebrow">The Verdict</p>
+        <div class="verdict-banner">
+          <div class="verdict-banner-label" id="video-verdict-label"></div>
+          <p class="verdict-banner-explanation" id="video-verdict-explanation"></p>
+          <div class="verdict-banner-techniques" id="video-verdict-techniques"></div>
+        </div>
+      </section>
 
-    <section id="video-verdict-banner" hidden>
-      <div class="verdict-banner">
-        <div class="verdict-banner-label" id="video-verdict-label"></div>
-        <p class="verdict-banner-explanation" id="video-verdict-explanation"></p>
-        <div class="verdict-banner-techniques" id="video-verdict-techniques"></div>
-      </div>
-    </section>
+      <section id="summary-section" hidden>
+        <h2>What actually happened</h2>
+        <p id="summary-text" class="summary-text"></p>
+      </section>
 
-    <section id="results" hidden>
-      <h2>Claims found</h2>
-      <table id="claims-table">
-        <thead>
-          <tr>
-            <th>#</th>
-            <th>Timestamp</th>
-            <th>Speaker</th>
-            <th>Claim</th>
-            <th>Type</th>
-            <th>Status</th>
-          </tr>
-        </thead>
-        <tbody></tbody>
-      </table>
-    </section>
+      <section id="verdicts-section" hidden>
+        <h2>Case files</h2>
+        <div id="verdicts"></div>
+      </section>
 
-    <section id="summary-section" hidden>
-      <h2>What actually happened</h2>
-      <p id="summary-text" class="summary-text"></p>
-    </section>
+      <section id="explainer-section" hidden>
+        <h2>Explainer versions</h2>
+        <p class="section-hint">Each version is rendered, watched by a critic, and fixed until approved (up to 2 rounds).</p>
+        <div id="explainer-versions"></div>
+      </section>
 
-    <section id="verdicts-section" hidden>
-      <h2>Verdicts</h2>
-      <div id="verdicts"></div>
-    </section>
-
-    <section id="explainer-section" hidden>
-      <h2>Explainer versions</h2>
-      <p class="section-hint">Each version is rendered, watched by a critic, and fixed until approved (up to 2 rounds).</p>
-      <div id="explainer-versions"></div>
-    </section>
-
-    <section id="agent-section" hidden>
-      <h2>Shareable video &amp; source verification</h2>
-      <p id="agent-status" class="section-hint"></p>
-      <a id="agent-download-link" class="download-button" href="#" download hidden>⬇ Download shareable video</a>
-      <div id="agent-sources-summary"></div>
+      <section id="agent-section" hidden>
+        <h2>Shareable video &amp; source verification</h2>
+        <p id="agent-status" class="section-hint"></p>
+        <a id="agent-download-link" class="download-button" href="#" download hidden>⬇ Download shareable video</a>
+        <div id="agent-sources-summary"></div>
+      </section>
     </section>
   </main>
 

@@ -30,6 +30,10 @@ const replayBannerClose = document.getElementById("replay-banner-close");
 const pastRunsEmpty = document.getElementById("past-runs-empty");
 const pastRunsList = document.getElementById("past-runs-list");
 const pastRunsRefreshBtn = document.getElementById("past-runs-refresh-btn");
+const stepButtons = document.querySelectorAll(".step-indicator .step");
+const screens = document.querySelectorAll(".screen");
+const traceStatusEl = document.getElementById("trace-status");
+const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 let activeTab = "youtube";
 let currentClaims = [];
@@ -38,6 +42,45 @@ let isReplaying = false;
 let investigatedCount = 0;
 let totalToInvestigate = 0;
 let agentPollHandle = null;
+
+// --- Three-screen flow: Start -> Investigation -> Report. Live runs and replays both ---
+// --- drive the same screens through the same handleEvent() dispatcher. ---
+const SCREEN_ORDER = ["start", "investigation", "report"];
+let currentScreen = "start";
+let investigationReady = false;
+let reportReady = false;
+
+function screenReachable(step) {
+  if (step === "start") return true;
+  if (step === "investigation") return investigationReady;
+  if (step === "report") return reportReady;
+  return false;
+}
+
+function updateStepIndicator() {
+  stepButtons.forEach((btn) => {
+    const step = btn.dataset.step;
+    const reachable = screenReachable(step);
+    btn.disabled = !reachable;
+    btn.classList.toggle("active", step === currentScreen);
+    btn.classList.toggle("done", SCREEN_ORDER.indexOf(step) < SCREEN_ORDER.indexOf(currentScreen) && reachable);
+  });
+}
+
+function showScreen(name) {
+  currentScreen = name;
+  screens.forEach((s) => {
+    s.hidden = s.dataset.screen !== name;
+  });
+  updateStepIndicator();
+  window.scrollTo({ top: 0, behavior: prefersReducedMotion ? "auto" : "smooth" });
+}
+
+stepButtons.forEach((btn) => {
+  btn.addEventListener("click", () => {
+    if (!btn.disabled) showScreen(btn.dataset.step);
+  });
+});
 
 // --- Live trace panel: one card per real pipeline step/agent call. ---
 const traceCards = new Map();
@@ -81,12 +124,33 @@ function resetTrace() {
   traceTimerHandle = setInterval(updateTraceElapsedTimes, 1000);
 }
 
-function createTraceCard(id, title, modelLabel, modelClass) {
+// --- Investigation-team icons: one per agent role, monoline SVG, no external assets. ---
+const ROLE_ICONS = {
+  extractor:
+    '<path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z"/><circle cx="12" cy="12" r="3"/>',
+  investigator: '<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>',
+  judge:
+    '<path d="M12 3v18M5 7h14M9 3h6"/><path d="M7 7l-4 8a4 4 0 0 0 8 0L7 7Z"/><path d="M17 7l-4 8a4 4 0 0 0 8 0l-4-8Z"/>',
+  explainer:
+    '<rect x="3" y="6" width="18" height="14" rx="1.5"/><path d="M3 10h18M7 6 5 10m6-4-2 4m6-4-2 4"/>',
+  critic: '<circle cx="12" cy="12" r="9"/><path d="m8 12.5 2.8 2.8L16 9.5"/>',
+  fixer:
+    '<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l2.6-2.6a4 4 0 0 1-5.3 5.3L6.7 20.3a2 2 0 1 1-2.8-2.8L12.2 9a4 4 0 0 1 5.3-5.3l-2.6 2.6Z"/>',
+  agent: '<path d="M12 2 4 5v6c0 5 3.5 9 8 11 4.5-2 8-6 8-11V5l-8-3Z"/>',
+};
+
+function roleIconSvg(role) {
+  const path = ROLE_ICONS[role] || ROLE_ICONS.investigator;
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
+}
+
+function createTraceCard(id, title, modelLabel, modelClass, role) {
   if (traceCards.has(id)) return traceCards.get(id);
   const el = document.createElement("div");
   el.className = "trace-card status-waiting";
   el.innerHTML = `
     <div class="trace-card-title-row">
+      <span class="trace-card-icon role-${role}">${roleIconSvg(role)}</span>
       <span class="trace-card-title">${title}</span>
     </div>
     <span class="model-badge ${modelClass}">${modelLabel}</span>
@@ -200,9 +264,12 @@ tabButtons.forEach((btn) => {
 });
 
 function setStatus(message, isError = false) {
-  statusEl.hidden = !message;
-  statusEl.textContent = message;
-  statusEl.classList.toggle("error", isError);
+  [statusEl, traceStatusEl].forEach((el) => {
+    if (!el) return;
+    el.hidden = !message;
+    el.textContent = message;
+    el.classList.toggle("error", isError);
+  });
 }
 
 function resetResults() {
@@ -349,8 +416,7 @@ function renderVerdicts(verdicts) {
         : "";
       card.innerHTML = `
         <div class="verdict-card-header">
-          <span class="claim-number">#${v.claim_index + 1}</span>
-          <span class="verdict-badge verdict-badge-${v.verdict}">${v.verdict}</span>
+          <span class="claim-number">Case #${v.claim_index + 1}</span>
           <span class="confidence">${Math.round(v.confidence * 100)}% confidence</span>
           ${techniqueBadge}
           ${attributionBadge}
@@ -358,6 +424,7 @@ function renderVerdicts(verdicts) {
         <p class="claim-text">"${claim ? claim.exact_wording : ""}"</p>
         <p class="explanation">${v.explanation}</p>
         <div class="sources"><span class="sources-label">Sources:</span>${sourcesHtml(v.sources, v.claim_index)}</div>
+        <span class="verdict-stamp stamp-${v.verdict}" aria-label="Verdict: ${v.verdict}">${v.verdict}</span>
       `;
       verdictsContainer.appendChild(card);
       setStatusCell(v.claim_index, "judged", "status-done");
@@ -372,7 +439,7 @@ function startAgentTask(runId, filename) {
 
   traceAgentStarted = true;
   const totalSources = currentVerdicts.reduce((sum, v) => sum + (v.sources ? v.sources.length : 0), 0);
-  createTraceCard("agent", "Managed Agent", "Managed Agent", "model-agent");
+  createTraceCard("agent", "Managed Agent", "Managed Agent", "model-agent", "agent");
   setTraceStatus("agent", "running", `Rendering MP4 and verifying ${totalSources} source(s) in sandbox...`);
 
   fetch("/api/agent-tasks", {
@@ -505,7 +572,7 @@ function handleEvent(evt) {
   switch (evt.stage) {
     case "extracting":
       setStatus("Gemini 4 Argon is watching the video and extracting claims. This can take a minute or two...");
-      createTraceCard("extractor", "Claim Extractor", "gemini-4-argon", "model-argon");
+      createTraceCard("extractor", "Claim Extractor", "gemini-4-argon", "model-argon", "extractor");
       setTraceStatus("extractor", "running", "Watching video and extracting claims...");
       break;
 
@@ -514,7 +581,7 @@ function handleEvent(evt) {
       setStatus(`Found ${evt.claims.length} claim(s). Starting investigation...`);
       setTraceStatus("extractor", "done", `Found ${evt.claims.length} claim(s)`);
       evt.claims.forEach((_, i) => {
-        createTraceCard(`investigator-${i}`, `Investigator #${i + 1}`, "gemini-3.8-flash", "model-flash");
+        createTraceCard(`investigator-${i}`, `Investigator #${i + 1}`, "gemini-3.8-flash", "model-flash", "investigator");
       });
       break;
 
@@ -547,7 +614,7 @@ function handleEvent(evt) {
 
     case "judging":
       setStatus("Gemini 4 Argon is weighing the evidence and judging each claim...");
-      createTraceCard("judge", "Judge", "gemini-4-argon", "model-argon");
+      createTraceCard("judge", "Judge", "gemini-4-argon", "model-argon", "judge");
       setTraceStatus("judge", "running", "Weighing evidence and judging each claim...");
       break;
 
@@ -565,7 +632,7 @@ function handleEvent(evt) {
 
     case "generating_explainer":
       setStatus("Gemini 4 Argon is generating an animated explainer of the results...");
-      createTraceCard("explainer", "Explainer Generator", "gemini-4-argon", "model-argon");
+      createTraceCard("explainer", "Explainer Generator", "gemini-4-argon", "model-argon", "explainer");
       setTraceStatus("explainer", "running", "Writing animated HTML explainer...");
       break;
 
@@ -580,7 +647,7 @@ function handleEvent(evt) {
         setTraceStatus(fixerId, "done", "Regenerated explainer");
       }
       const criticId = `critic-v${evt.version}`;
-      createTraceCard(criticId, `Critic · v${evt.version}`, "gemini-4-argon", "model-argon");
+      createTraceCard(criticId, `Critic · v${evt.version}`, "gemini-4-argon", "model-argon", "critic");
       setTraceStatus(criticId, "running", `Rendering v${evt.version} in headless browser...`);
       break;
     }
@@ -606,7 +673,7 @@ function handleEvent(evt) {
     case "fixing": {
       setStatus(`Fixing v${evt.from_version} to produce v${evt.to_version}...`);
       const fixerId = `fixer-v${evt.from_version}`;
-      createTraceCard(fixerId, `Fixer · v${evt.from_version}→v${evt.to_version}`, "gemini-4-argon", "model-argon");
+      createTraceCard(fixerId, `Fixer · v${evt.from_version}→v${evt.to_version}`, "gemini-4-argon", "model-argon", "fixer");
       setTraceStatus(fixerId, "running", `Fixing v${evt.from_version} → v${evt.to_version}...`);
       break;
     }
@@ -618,6 +685,9 @@ function handleEvent(evt) {
       renderVerdicts(evt.result.verdicts || []);
       renderExplainerVersions(evt.result.versions);
       if (!isReplaying) setStatus("Analysis complete.");
+
+      reportReady = true;
+      showScreen("report");
 
       tracePipelineDone = true;
       if (!isReplaying) {
@@ -637,7 +707,7 @@ function handleEvent(evt) {
       agentStatusEl.classList.remove("agent-error");
       agentStatusEl.innerHTML = '<span class="spinner-inline"></span> Managed Agent working in sandbox...';
       traceAgentStarted = true;
-      createTraceCard("agent", "Managed Agent", "Managed Agent", "model-agent");
+      createTraceCard("agent", "Managed Agent", "Managed Agent", "model-agent", "agent");
       setTraceStatus("agent", "running", `Rendering MP4 and verifying ${evt.total_sources} source(s) in sandbox...`);
       break;
 
@@ -691,6 +761,9 @@ replayBannerClose.addEventListener("click", () => {
   resetResults();
   resetTrace();
   setStatus("");
+  investigationReady = false;
+  reportReady = false;
+  showScreen("start");
 });
 
 async function replayRun(runId, speed) {
@@ -699,6 +772,9 @@ async function replayRun(runId, speed) {
   resetResults();
   resetTrace();
   setStatus(speed ? "Loading replay..." : "Loading saved run...");
+  investigationReady = true;
+  reportReady = false;
+  showScreen("investigation");
 
   try {
     const [eventsRes, metaRes] = await Promise.all([
@@ -784,6 +860,7 @@ function loadPastRuns() {
 
 pastRunsRefreshBtn.addEventListener("click", loadPastRuns);
 loadPastRuns();
+showScreen("start");
 
 async function streamAnalysis(formData) {
   const response = await fetch("/api/analyze", { method: "POST", body: formData });
@@ -838,6 +915,9 @@ form.addEventListener("submit", async (event) => {
   resetResults();
   resetTrace();
   setStatus("Starting...");
+  investigationReady = true;
+  reportReady = false;
+  showScreen("investigation");
 
   try {
     await streamAnalysis(formData);

@@ -1,20 +1,31 @@
 :root {
-  --bg: #0f1115;
-  --card: #171a21;
+  --bg: #0a0c10;
+  --card: #15181f;
+  --card-alt: #1b1f29;
   --border: #2a2e38;
-  --text: #e6e8ec;
-  --muted: #9aa1ad;
+  --border-strong: #3c4254;
+  --text: #f0f2f5;
+  --muted: #99a0ad;
   --accent: #5eb0ff;
   --statistic: #5eb0ff;
   --event: #9b7bff;
   --quote: #5edb8f;
   --other: #8a8f99;
-  --true: #4fd17e;
-  --misleading: #f5a623;
-  --false: #ff5c5c;
-  --unverifiable: #8a8f99;
+  --true: #32e28a;
+  --misleading: #ffb020;
+  --false: #ff4d4d;
+  --unverifiable: #aab2bf;
   --blocked: #a78bfa;
   --not-checked: #6b7280;
+  --role-extractor: #5eb0ff;
+  --role-investigator: #34c6a6;
+  --role-judge: #b98cff;
+  --role-explainer: #ff8fc9;
+  --role-critic: #ffb020;
+  --role-fixer: #ff9f4a;
+  --role-agent: #38d9c9;
+  --font-display: "Oswald", "Arial Narrow", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 * {
@@ -24,7 +35,9 @@
 body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-  background: var(--bg);
+  background-color: var(--bg);
+  background-image: radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.035) 1px, transparent 0);
+  background-size: 24px 24px;
   color: var(--text);
 }
 
@@ -33,10 +46,23 @@ header {
   text-align: center;
 }
 
+.eyebrow {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 0.78rem;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin: 0 0 6px;
+}
+
 header h1 {
   margin: 0;
-  font-size: 2.2rem;
-  letter-spacing: 0.02em;
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: 2.6rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
 }
 
 .tagline {
@@ -48,6 +74,108 @@ main {
   max-width: 1100px;
   margin: 0 auto;
   padding: 24px;
+}
+
+h2 {
+  font-family: var(--font-display);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+/* --- Step indicator: Start -> Investigation -> Report --- */
+.step-indicator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  max-width: 560px;
+  margin: 18px auto 0;
+  padding: 0 24px;
+}
+
+.step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 6px 4px;
+  font-size: 0.92rem;
+  transition: color 0.15s ease;
+}
+
+.step:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.step-num {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 2px solid var(--border-strong);
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 0.82rem;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.step-label {
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.78rem;
+}
+
+.step.active {
+  color: var(--text);
+}
+
+.step.active .step-num {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #06101c;
+}
+
+.step.done:not(.active) .step-num {
+  border-color: var(--true);
+  color: var(--true);
+}
+
+.step:not(:disabled):hover .step-num {
+  border-color: var(--accent);
+}
+
+.step-connector {
+  width: 32px;
+  height: 2px;
+  background: var(--border-strong);
+}
+
+/* --- Screens: one visible at a time, swapped with a quick crossfade. --- */
+.screen[hidden] {
+  display: none;
+}
+
+.screen {
+  animation: screen-in 320ms ease both;
+}
+
+@keyframes screen-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 .input-card,
@@ -223,17 +351,50 @@ tr:last-child td {
 }
 
 .verdict-card {
-  background: var(--card);
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(180deg, var(--card-alt), var(--card) 40px);
   border: 1px solid var(--border);
-  border-left: 4px solid var(--unverifiable);
-  border-radius: 10px;
-  padding: 16px 18px;
+  border-left: 5px solid var(--unverifiable);
+  border-radius: 4px 12px 12px 4px;
+  padding: 18px 110px 18px 20px;
 }
 
 .verdict-card.verdict-true { border-left-color: var(--true); }
 .verdict-card.verdict-misleading { border-left-color: var(--misleading); }
 .verdict-card.verdict-false { border-left-color: var(--false); }
 .verdict-card.verdict-unverifiable { border-left-color: var(--unverifiable); }
+
+/* --- Rubber-stamp verdict: slams onto the case file with a quick, snappy impact. --- */
+.verdict-stamp {
+  position: absolute;
+  top: 16px;
+  right: 18px;
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: 1.05rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 5px 14px;
+  border: 3px solid currentColor;
+  border-radius: 6px;
+  transform: rotate(-8deg);
+  pointer-events: none;
+  animation: stamp-impact 480ms cubic-bezier(0.17, 1.7, 0.4, 1) both;
+}
+
+.verdict-stamp.stamp-true,
+.verdict-stamp.stamp-accurate { color: var(--true); }
+.verdict-stamp.stamp-misleading { color: var(--misleading); }
+.verdict-stamp.stamp-false { color: var(--false); }
+.verdict-stamp.stamp-unverifiable { color: var(--unverifiable); }
+
+@keyframes stamp-impact {
+  0% { opacity: 0; transform: rotate(-8deg) scale(2.4); }
+  55% { opacity: 1; transform: rotate(-8deg) scale(0.92); }
+  78% { transform: rotate(-8deg) scale(1.06); }
+  100% { opacity: 1; transform: rotate(-8deg) scale(1); }
+}
 
 .verdict-card-header {
   display: flex;
@@ -245,24 +406,13 @@ tr:last-child td {
 
 .claim-number {
   color: var(--muted);
+  font-family: var(--font-mono);
   font-weight: 600;
-  font-size: 0.85rem;
-}
-
-.verdict-badge {
-  display: inline-block;
-  padding: 3px 10px;
-  border-radius: 999px;
-  font-size: 0.78rem;
-  font-weight: 700;
+  font-size: 0.8rem;
   text-transform: uppercase;
-  letter-spacing: 0.03em;
+  letter-spacing: 0.04em;
 }
 
-.verdict-badge-true { background: rgba(79, 209, 126, 0.15); color: var(--true); }
-.verdict-badge-misleading { background: rgba(245, 166, 35, 0.15); color: var(--misleading); }
-.verdict-badge-false { background: rgba(255, 92, 92, 0.15); color: var(--false); }
-.verdict-badge-unverifiable { background: rgba(138, 143, 153, 0.15); color: var(--unverifiable); }
 
 .confidence {
   color: var(--muted);
@@ -339,22 +489,33 @@ tr:last-child td {
 
 .verdict-banner {
   border-radius: 14px;
-  padding: 22px 24px;
+  padding: 28px 28px 26px;
   border: 1px solid var(--border);
   background: var(--card);
-  border-top: 5px solid var(--unverifiable);
+  border-top: 7px solid var(--unverifiable);
+  box-shadow: 0 16px 40px -20px rgba(0, 0, 0, 0.6);
+  animation: reveal-banner 550ms cubic-bezier(0.17, 1.6, 0.3, 1) both;
 }
 
-.verdict-banner.banner-accurate { border-top-color: var(--true); background: rgba(79, 209, 126, 0.07); }
-.verdict-banner.banner-misleading { border-top-color: var(--misleading); background: rgba(245, 166, 35, 0.07); }
-.verdict-banner.banner-false { border-top-color: var(--false); background: rgba(255, 92, 92, 0.07); }
+.verdict-banner.banner-accurate { border-top-color: var(--true); background: rgba(50, 226, 138, 0.08); }
+.verdict-banner.banner-misleading { border-top-color: var(--misleading); background: rgba(255, 176, 32, 0.08); }
+.verdict-banner.banner-false { border-top-color: var(--false); background: rgba(255, 77, 77, 0.08); }
+
+@keyframes reveal-banner {
+  0% { opacity: 0; transform: scale(0.9) translateY(14px); }
+  65% { opacity: 1; }
+  100% { opacity: 1; transform: scale(1) translateY(0); }
+}
 
 .verdict-banner-label {
-  font-size: 1.4rem;
+  display: inline-block;
+  font-family: var(--font-display);
+  font-size: 3rem;
   font-weight: 800;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
-  margin-bottom: 8px;
+  margin-bottom: 10px;
+  animation: stamp-impact 480ms 140ms cubic-bezier(0.17, 1.7, 0.4, 1) both;
 }
 
 .banner-accurate .verdict-banner-label { color: var(--true); }
@@ -764,12 +925,48 @@ tr:last-child td {
 .trace-card-title-row {
   display: flex;
   align-items: center;
+  gap: 6px;
 }
 
 .trace-card-title {
   font-size: 0.78rem;
   font-weight: 700;
   color: var(--text);
+}
+
+/* --- Investigation team: each role gets its own icon and color. --- */
+.trace-card-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  background: var(--unverifiable);
+  color: #0a0c10;
+}
+
+.trace-card-icon svg {
+  width: 13px;
+  height: 13px;
+}
+
+.trace-card-icon.role-extractor { background: var(--role-extractor); }
+.trace-card-icon.role-investigator { background: var(--role-investigator); }
+.trace-card-icon.role-judge { background: var(--role-judge); }
+.trace-card-icon.role-explainer { background: var(--role-explainer); }
+.trace-card-icon.role-critic { background: var(--role-critic); }
+.trace-card-icon.role-fixer { background: var(--role-fixer); }
+.trace-card-icon.role-agent { background: var(--role-agent); }
+
+.trace-card.status-running .trace-card-icon {
+  animation: icon-pulse 1.3s ease-in-out infinite;
+}
+
+@keyframes icon-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.16); }
 }
 
 .model-badge {
@@ -839,12 +1036,13 @@ tr:last-child td {
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+  max-width: 1052px;
   background: rgba(167, 139, 250, 0.12);
   border: 1px solid rgba(167, 139, 250, 0.45);
   color: var(--text);
   border-radius: 10px;
   padding: 10px 16px;
-  margin-bottom: 18px;
+  margin: 18px auto 0;
   font-size: 0.9rem;
 }
 
@@ -942,4 +1140,14 @@ tr:last-child td {
 .past-run-actions button:hover {
   border-color: var(--accent);
   color: var(--accent);
+}
+
+/* --- Respect reduced-motion preferences everywhere: stamps, reveals, pulses, screen fades. --- */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }
