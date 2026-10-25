@@ -11,6 +11,7 @@ from backend.schemas import Claim, ClaimExtractionResult, EditingSignal, Extract
 EXTRACTOR_MODEL = "gemini-4-argon"
 INVESTIGATOR_MODEL = "gemini-3.8-flash"
 JUDGE_MODEL = "gemini-4-argon"
+EXPLAINER_MODEL = "gemini-4-argon"
 
 CLAIM_EXTRACTION_PROMPT = """Watch this video and extract every factual claim made in it — \
 by speech or on-screen text. A factual claim is something that could be checked against evidence \
@@ -91,13 +92,46 @@ Editing signals noticed while extracting claims (cuts, repeated segments, overla
 Claims and investigator findings:
 {claims_and_findings_json}"""
 
+EXPLAINER_PROMPT_TEMPLATE = """Generate a single self-contained HTML page that works as a 20-30 second \
+animated explainer of a fact-check report, suitable for sharing (e.g. embedded in a page or shown on a \
+projector).
+
+Output requirements:
+- Output ONLY the raw HTML document, starting with <!DOCTYPE html>. No markdown, no code fences, no \
+commentary before or after it.
+- Self-contained: all CSS and JavaScript inline in the page via <style> and <script> tags. Do not use any \
+external dependency except, if truly needed, a script from cdnjs.cloudflare.com or cdn.jsdelivr.net/npm/ \
+— prefer plain CSS animations and vanilla JS over any library.
+- Auto-playing: the animation must start automatically on page load with no interaction required, and run \
+for about 20 to 30 seconds total before holding on a final summary frame (looping back to the start after \
+a pause is fine).
+- Clean, readable design: dark background, large legible type, generous spacing, one idea on screen at a \
+time (a slideshow-style sequence with smooth CSS transitions between frames). Use color to communicate \
+verdicts — green for true/accurate, orange for misleading, red for false, gray for unverifiable — \
+consistently throughout.
+- Responsive enough to still look reasonable in a small embedded iframe around 960x540.
+
+The animation sequence should show, in this order:
+1. The video's overall verdict as a bold title card, with the misleading techniques used, if any.
+2. Each key claim with its individual verdict badge and a one-line reason (cap this at the 5 most \
+important claims if there are more).
+3. If the video is misleading or false, a card explaining how it misleads, using the techniques and \
+explanations given.
+4. A "What actually happened" card with the true story in plain language.
+5. A final card listing the main sources (title and domain, not full URLs) used to verify the claims.
+
+Here is the fact-check data to visualize:
+{data_json}"""
+
 _FILE_POLL_INTERVAL_SECONDS = 3
 _FILE_POLL_TIMEOUT_SECONDS = 300
 _INTERACTION_POLL_INTERVAL_SECONDS = 5
 _EXTRACTION_TIMEOUT_SECONDS = 1200
 _INVESTIGATION_TIMEOUT_SECONDS = 180
 _JUDGE_TIMEOUT_SECONDS = 1200
+_EXPLAINER_TIMEOUT_SECONDS = 1200
 _MAX_PARALLEL_INVESTIGATIONS = 8
+_MAX_EXPLAINER_SOURCES = 6
 
 
 def _client() -> genai.Client:
@@ -118,14 +152,18 @@ def _await_interaction(client: genai.Client, interaction, timeout_seconds: float
     return interaction
 
 
-def _parse_json_output(interaction) -> dict:
-    raw = interaction.output_text.strip()
+def _strip_code_fence(raw: str, lang_prefix: str) -> str:
+    raw = raw.strip()
     if raw.startswith("```"):
         raw = raw.strip("`")
-        if raw.startswith("json"):
-            raw = raw[4:]
+        if raw.startswith(lang_prefix):
+            raw = raw[len(lang_prefix) :]
         raw = raw.strip()
-    return json.loads(raw)
+    return raw
+
+
+def _parse_json_output(interaction) -> dict:
+    return json.loads(_strip_code_fence(interaction.output_text, "json"))
 
 
 def _await_file_active(client: genai.Client, uploaded):
@@ -254,6 +292,55 @@ def _judge_claims(
     return result
 
 
+def _build_explainer_data(claims: list[Claim], judge_result: JudgeResult) -> dict:
+    verdict_by_index = {v.claim_index: v for v in judge_result.verdicts}
+    claims_payload = []
+    for i, claim in enumerate(claims):
+        verdict = verdict_by_index.get(i)
+        if verdict is None:
+            continue
+        claims_payload.append(
+            {
+                "exact_wording": claim.exact_wording,
+                "timestamps": claim.timestamps,
+                "verdict": verdict.verdict,
+                "confidence": verdict.confidence,
+                "misleading_technique": verdict.misleading_technique,
+                "explanation": verdict.explanation,
+                "sources": [s.model_dump() for s in verdict.sources],
+            }
+        )
+
+    seen_urls: set[str] = set()
+    main_sources = []
+    for verdict in judge_result.verdicts:
+        for source in verdict.sources:
+            if source.url not in seen_urls:
+                seen_urls.add(source.url)
+                main_sources.append(source.model_dump())
+    main_sources = main_sources[:_MAX_EXPLAINER_SOURCES]
+
+    return {
+        "video_verdict": judge_result.video_verdict.model_dump(),
+        "claims": claims_payload,
+        "what_actually_happened": judge_result.what_actually_happened,
+        "main_sources": main_sources,
+    }
+
+
+def _generate_explainer_html(client: genai.Client, claims: list[Claim], judge_result: JudgeResult) -> str:
+    data = _build_explainer_data(claims, judge_result)
+    prompt = EXPLAINER_PROMPT_TEMPLATE.format(data_json=json.dumps(data, indent=2))
+    interaction = client.interactions.create(
+        model=EXPLAINER_MODEL,
+        input=prompt,
+        generation_config={"thinking_level": "medium"},
+        background=True,
+    )
+    interaction = _await_interaction(client, interaction, _EXPLAINER_TIMEOUT_SECONDS)
+    return _strip_code_fence(interaction.output_text, "html")
+
+
 def run_pipeline(youtube_url: str | None = None, file_path: str | None = None) -> Iterator[dict]:
     client = _client()
 
@@ -300,4 +387,8 @@ def run_pipeline(youtube_url: str | None = None, file_path: str | None = None) -
 
     yield {"stage": "judging"}
     judge_result = _judge_claims(client, claims, findings, extraction.editing_signals)
-    yield {"stage": "done", "result": judge_result.model_dump()}
+
+    yield {"stage": "generating_explainer"}
+    explainer_html = _generate_explainer_html(client, claims, judge_result)
+
+    yield {"stage": "done", "result": {**judge_result.model_dump(), "explainer_html": explainer_html}}
