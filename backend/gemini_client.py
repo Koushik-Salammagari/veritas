@@ -235,15 +235,26 @@ whether ffmpeg is already available with `which ffmpeg` before trying to install
 4. Confirm /workspace/explainer.mp4 exists and is not 0 bytes.
 
 TASK 2 — Verify sources:
-Below is a list of source citations used in a fact-check, each tied to a specific claim. For EACH one:
-1. Fetch the URL (curl or Python requests, following redirects, with a realistic User-Agent).
-2. Determine whether it loads successfully (a real page, not a 404/error/timeout).
-3. If it loads, read enough of the page content to judge whether it actually supports the specific claim \
-it's cited for (the claim_text is given for context).
-4. Record a status: "verified" (loads AND supports the claim), "broken" (doesn't load, errors, or times \
-out), or "unsupported" (loads fine but the content doesn't actually support the claim).
+Below is a numbered list of EXACTLY {num_sources} source citations used in a fact-check, each tied to a \
+specific claim. You MUST attempt every single one — this list is short enough to do completely; do not \
+skip, sample, or summarize a subset. For EACH one:
+1. Fetch the URL with curl or Python requests, following redirects, using a realistic browser User-Agent \
+header (e.g. "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"). If a plain request is \
+blocked, you may try once more before concluding it's blocked.
+2. Classify it as exactly one of:
+   - "broken": the resource genuinely does not exist — HTTP 404, DNS failure, connection refused, or a \
+redirect that lands on a generic "page not found".
+   - "blocked": the request was refused by access control, not because the content is missing — HTTP \
+401/403/406/429, a paywall, login wall, CAPTCHA, or bot-detection page. (A site returning 406/403 to a \
+non-browser request is "blocked", not "broken" — it most likely works fine in a real browser. Do not \
+mark these "broken".)
+   - "unsupported": it loads successfully (2xx) but, after reading its content, does not actually \
+support the specific claim it's cited for (claim_text is given for context).
+   - "verified": it loads successfully (2xx) AND its content supports the claim.
+3. Write one brief sentence of notes explaining the classification (for "blocked", mention the status \
+code or block type you observed).
 
-Sources to verify:
+Sources to verify (exactly {num_sources}, numbered 1-{num_sources}):
 {sources_json}
 
 When both tasks are complete, write a JSON file to EXACTLY /workspace/result.json with this shape and \
@@ -252,11 +263,13 @@ nothing else in the file:
   "video_rendered": true or false,
   "sources": [
     {{"claim_index": <int>, "url": "<the exact url given above>", "status": "verified" | "broken" | \
-"unsupported", "notes": "<one brief sentence>"}}
+"blocked" | "unsupported", "notes": "<one brief sentence>"}}
   ]
 }}
-Include exactly one entry per source listed above, matching claim_index and url exactly. Do not add \
-commentary outside the JSON file."""
+Before writing the file, COUNT your sources array and confirm it has exactly {num_sources} entries — one \
+per source listed above, in the same order, with claim_index and url copied exactly. If you were unable \
+to fully check one, still include your best-effort classification for it rather than omitting it. Do not \
+add commentary outside the JSON file."""
 
 _FILE_POLL_INTERVAL_SECONDS = 3
 _FILE_POLL_TIMEOUT_SECONDS = 300
@@ -654,7 +667,9 @@ def run_verification_agent(
         "First, run this exact bash command to create the input file (do not modify its contents):\n\n"
         + write_file_cmd
         + "\n\n"
-        + AGENT_VERIFICATION_PROMPT_TEMPLATE.format(sources_json=json.dumps(sources_payload, indent=2))
+        + AGENT_VERIFICATION_PROMPT_TEMPLATE.format(
+            num_sources=len(sources_payload), sources_json=json.dumps(sources_payload, indent=2)
+        )
     )
 
     interaction = client.interactions.create(
@@ -691,8 +706,10 @@ def run_verification_agent(
                 "claim_index": item["claim_index"],
                 "url": item["url"],
                 "title": item["title"],
-                "status": matched["status"] if matched else "broken",
-                "notes": matched.get("notes", "") if matched else "The agent did not report a result for this source.",
+                "status": matched["status"] if matched else "not_checked",
+                "notes": matched.get("notes", "")
+                if matched
+                else "The agent did not report a result for this source.",
             }
         )
 
@@ -750,9 +767,15 @@ def run_pipeline(
 
     yield {"stage": "judging"}
     judge_result = _judge_claims(client, claims, findings, extraction.editing_signals)
+    yield {
+        "stage": "judged",
+        "video_verdict": judge_result.video_verdict.verdict,
+        "claims_judged": len(judge_result.verdicts),
+    }
 
     yield {"stage": "generating_explainer"}
     explainer_html = _generate_explainer_html(client, claims, judge_result)
+    yield {"stage": "explainer_generated"}
 
     versions: list[dict] = []
     if explainer_dir is not None:
