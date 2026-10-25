@@ -20,6 +20,10 @@ const agentSection = document.getElementById("agent-section");
 const agentStatusEl = document.getElementById("agent-status");
 const agentDownloadLink = document.getElementById("agent-download-link");
 const agentSourcesSummary = document.getElementById("agent-sources-summary");
+const traceSection = document.getElementById("trace-section");
+const traceGrid = document.getElementById("trace-grid");
+const traceSummaryLine = document.getElementById("trace-summary-line");
+const traceToggleBtn = document.getElementById("trace-toggle-btn");
 
 let activeTab = "youtube";
 let currentClaims = [];
@@ -27,6 +31,155 @@ let currentVerdicts = [];
 let investigatedCount = 0;
 let totalToInvestigate = 0;
 let agentPollHandle = null;
+
+// --- Live trace panel: one card per real pipeline step/agent call. ---
+const traceCards = new Map();
+let traceOrder = [];
+let traceStartTime = null;
+let traceTimerHandle = null;
+let tracePipelineDone = false;
+let traceAgentStarted = false;
+let traceAgentSettled = false;
+let traceCollapsed = false;
+let traceSummaryCache = null;
+
+function truncate(str, maxLen) {
+  if (!str) return "";
+  return str.length > maxLen ? `${str.slice(0, maxLen - 1)}…` : str;
+}
+
+function formatElapsed(ms) {
+  const totalSeconds = Math.max(0, Math.round(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+}
+
+function resetTrace() {
+  traceCards.clear();
+  traceOrder = [];
+  traceGrid.innerHTML = "";
+  traceStartTime = Date.now();
+  tracePipelineDone = false;
+  traceAgentStarted = false;
+  traceAgentSettled = false;
+  traceCollapsed = false;
+  traceSummaryCache = null;
+  traceSection.hidden = false;
+  traceGrid.hidden = false;
+  traceSummaryLine.hidden = true;
+  traceToggleBtn.hidden = false;
+  traceToggleBtn.textContent = "Collapse";
+  if (traceTimerHandle) clearInterval(traceTimerHandle);
+  traceTimerHandle = setInterval(updateTraceElapsedTimes, 1000);
+}
+
+function createTraceCard(id, title, modelLabel, modelClass) {
+  if (traceCards.has(id)) return traceCards.get(id);
+  const el = document.createElement("div");
+  el.className = "trace-card status-waiting";
+  el.innerHTML = `
+    <div class="trace-card-title-row">
+      <span class="trace-card-title">${title}</span>
+    </div>
+    <span class="model-badge ${modelClass}">${modelLabel}</span>
+    <div class="trace-card-status-row">
+      <span class="trace-card-status-label">waiting</span>
+      <span class="trace-card-elapsed"></span>
+    </div>
+    <div class="trace-card-logs"></div>
+  `;
+  traceGrid.appendChild(el);
+  const card = { el, status: "waiting", startedAt: null, elapsedMs: 0, logs: [], modelLabel };
+  traceCards.set(id, card);
+  traceOrder.push(id);
+  return card;
+}
+
+function updateCardElapsedDisplay(id) {
+  const card = traceCards.get(id);
+  if (!card) return;
+  const el = card.el.querySelector(".trace-card-elapsed");
+  if (card.status === "running" && card.startedAt) {
+    el.textContent = formatElapsed(Date.now() - card.startedAt);
+  } else if (card.status === "done" || card.status === "failed") {
+    el.textContent = formatElapsed(card.elapsedMs);
+  } else {
+    el.textContent = "";
+  }
+}
+
+function updateTraceElapsedTimes() {
+  traceOrder.forEach((id) => {
+    const card = traceCards.get(id);
+    if (card && card.status === "running") updateCardElapsedDisplay(id);
+  });
+}
+
+function addTraceLog(id, text) {
+  const card = traceCards.get(id);
+  if (!card || !text) return;
+  card.logs.push(text);
+  if (card.logs.length > 3) card.logs = card.logs.slice(-3);
+  card.el.querySelector(".trace-card-logs").innerHTML = card.logs.map((l) => `<div>${l}</div>`).join("");
+}
+
+function setTraceStatus(id, status, log) {
+  const card = traceCards.get(id);
+  if (!card) return;
+  card.status = status;
+  card.el.className = `trace-card status-${status}`;
+  if (status === "running" && !card.startedAt) {
+    card.startedAt = Date.now();
+  }
+  if ((status === "done" || status === "failed") && card.startedAt) {
+    card.elapsedMs = Date.now() - card.startedAt;
+  }
+  const labelEl = card.el.querySelector(".trace-card-status-label");
+  if (status === "running") {
+    labelEl.innerHTML = '<span class="spinner-inline"></span> running';
+  } else {
+    labelEl.textContent = status;
+  }
+  if (log) addTraceLog(id, log);
+  updateCardElapsedDisplay(id);
+}
+
+function computeTraceSummary() {
+  const totalCards = traceOrder.length;
+  const models = new Set();
+  let criticRounds = 0;
+  traceOrder.forEach((id) => {
+    const card = traceCards.get(id);
+    if (card && card.modelLabel) models.add(card.modelLabel);
+    if (id.startsWith("critic-")) criticRounds += 1;
+  });
+  const totalElapsed = formatElapsed(Date.now() - traceStartTime);
+  return `${totalCards} agent${totalCards === 1 ? "" : "s"} · ${models.size} model${models.size === 1 ? "" : "s"} · ${criticRounds} critic round${criticRounds === 1 ? "" : "s"} · ${totalElapsed}`;
+}
+
+function setTraceCollapsed(collapsed) {
+  traceCollapsed = collapsed;
+  traceGrid.hidden = collapsed;
+  traceToggleBtn.textContent = collapsed ? "Expand" : "Collapse";
+  traceSummaryLine.hidden = !(collapsed && traceSummaryCache);
+  if (collapsed && traceSummaryCache) {
+    traceSummaryLine.textContent = traceSummaryCache;
+  }
+}
+
+function checkTraceSettled() {
+  if (tracePipelineDone && (!traceAgentStarted || traceAgentSettled)) {
+    if (traceTimerHandle) {
+      clearInterval(traceTimerHandle);
+      traceTimerHandle = null;
+    }
+    traceSummaryCache = computeTraceSummary();
+    setTraceCollapsed(true);
+  }
+}
+
+traceToggleBtn.addEventListener("click", () => setTraceCollapsed(!traceCollapsed));
 
 tabButtons.forEach((btn) => {
   btn.addEventListener("click", () => {
@@ -207,6 +360,11 @@ function startAgentTask(runId, filename) {
   agentStatusEl.classList.remove("agent-error");
   agentStatusEl.innerHTML = '<span class="spinner-inline"></span> Managed Agent working in sandbox...';
 
+  traceAgentStarted = true;
+  const totalSources = currentVerdicts.reduce((sum, v) => sum + (v.sources ? v.sources.length : 0), 0);
+  createTraceCard("agent", "Managed Agent", "Managed Agent", "model-agent");
+  setTraceStatus("agent", "running", `Rendering MP4 and verifying ${totalSources} source(s) in sandbox...`);
+
   fetch("/api/agent-tasks", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -220,6 +378,9 @@ function startAgentTask(runId, filename) {
     .catch((err) => {
       agentStatusEl.textContent = `Managed Agent could not start: ${err.message || err}`;
       agentStatusEl.classList.add("agent-error");
+      setTraceStatus("agent", "failed", truncate(String(err.message || err), 60));
+      traceAgentSettled = true;
+      checkTraceSettled();
     });
 }
 
@@ -234,14 +395,22 @@ function pollAgentTask(taskId) {
         agentPollHandle = setTimeout(() => pollAgentTask(taskId), 8000);
       } else if (task.status === "done") {
         renderAgentResult(task.result);
+        traceAgentSettled = true;
+        checkTraceSettled();
       } else if (task.status === "failed") {
         agentStatusEl.textContent = `Managed Agent failed: ${task.error || "unknown error"}. Everything else above is unaffected.`;
         agentStatusEl.classList.add("agent-error");
+        setTraceStatus("agent", "failed", truncate(task.error || "unknown error", 60));
+        traceAgentSettled = true;
+        checkTraceSettled();
       }
     })
     .catch((err) => {
       agentStatusEl.textContent = `Lost track of the Managed Agent: ${err.message || err}`;
       agentStatusEl.classList.add("agent-error");
+      setTraceStatus("agent", "failed", "Lost track of agent task");
+      traceAgentSettled = true;
+      checkTraceSettled();
     });
 }
 
@@ -257,16 +426,24 @@ function renderAgentResult(result) {
   }
 
   const verifications = result.source_verifications || [];
-  const counts = { verified: 0, broken: 0, unsupported: 0 };
+  const counts = { verified: 0, broken: 0, blocked: 0, unsupported: 0, not_checked: 0 };
   verifications.forEach((v) => {
     counts[v.status] = (counts[v.status] || 0) + 1;
   });
 
+  const countLabels = {
+    verified: "verified",
+    broken: "broken (404/not found)",
+    blocked: "blocked (403/406/paywall)",
+    unsupported: "don't support claim",
+    not_checked: "not checked",
+  };
   const countsHtml = `
     <div class="agent-summary-counts">
-      <span class="agent-count-pill count-verified">${counts.verified} verified</span>
-      <span class="agent-count-pill count-broken">${counts.broken} broken</span>
-      <span class="agent-count-pill count-unsupported">${counts.unsupported} don't support claim</span>
+      ${Object.keys(countLabels)
+        .filter((status) => counts[status] > 0)
+        .map((status) => `<span class="agent-count-pill count-${status}">${counts[status]} ${countLabels[status]}</span>`)
+        .join("")}
     </div>
   `;
   const rowsHtml = verifications
@@ -282,7 +459,20 @@ function renderAgentResult(result) {
   agentSourcesSummary.innerHTML = `${countsHtml}<div class="agent-sources-list">${rowsHtml}</div>`;
 
   applySourceFlags(verifications);
+
+  const summaryParts = Object.keys(countLabels)
+    .filter((status) => counts[status] > 0)
+    .map((status) => `${counts[status]} ${status}`);
+  const doneLog = `${result.video_url ? "Rendered MP4" : "No video"} · ${summaryParts.join(", ") || "no sources"}`;
+  setTraceStatus("agent", "done", doneLog);
 }
+
+const SOURCE_FLAG_LABELS = {
+  broken: "broken",
+  blocked: "blocked",
+  unsupported: "doesn't support",
+  not_checked: "not checked",
+};
 
 function applySourceFlags(verifications) {
   verifications
@@ -294,7 +484,7 @@ function applySourceFlags(verifications) {
         if (a.dataset.sourceKey === key && !alreadyFlagged) {
           const flag = document.createElement("span");
           flag.className = `source-flag status-${v.status}`;
-          flag.textContent = v.status === "broken" ? "broken" : "doesn't support";
+          flag.textContent = SOURCE_FLAG_LABELS[v.status] || v.status;
           a.after(flag);
         }
       });
@@ -305,11 +495,17 @@ function handleEvent(evt) {
   switch (evt.stage) {
     case "extracting":
       setStatus("Gemini 4 Argon is watching the video and extracting claims. This can take a minute or two...");
+      createTraceCard("extractor", "Claim Extractor", "gemini-4-argon", "model-argon");
+      setTraceStatus("extractor", "running", "Watching video and extracting claims...");
       break;
 
     case "claims_extracted":
       renderClaimsTable(evt.claims);
       setStatus(`Found ${evt.claims.length} claim(s). Starting investigation...`);
+      setTraceStatus("extractor", "done", `Found ${evt.claims.length} claim(s)`);
+      evt.claims.forEach((_, i) => {
+        createTraceCard(`investigator-${i}`, `Investigator #${i + 1}`, "gemini-3.8-flash", "model-flash");
+      });
       break;
 
     case "investigating_start":
@@ -317,41 +513,85 @@ function handleEvent(evt) {
       investigatedCount = 0;
       setAllStatusCells("investigating...", "status-investigating");
       setStatus(`Investigating ${evt.total} claim(s) in parallel with Gemini 3.8 Flash + Google Search...`);
+      for (let i = 0; i < evt.total; i++) {
+        setTraceStatus(`investigator-${i}`, "running", "Researching via Google Search...");
+      }
       break;
 
-    case "investigated":
+    case "investigated": {
       investigatedCount += 1;
       setStatusCell(evt.claim_index, "investigated", "status-done");
       setStatus(`Investigated ${investigatedCount}/${totalToInvestigate} claim(s)...`);
+      const sources = (evt.finding && evt.finding.sources) || [];
+      let log;
+      if (sources.length === 0) {
+        log = "No reliable sources found";
+      } else {
+        const titles = sources.slice(0, 2).map((s) => s.title || s.url);
+        const more = sources.length > 2 ? ` +${sources.length - 2} more` : "";
+        log = `Found: ${titles.join(", ")}${more}`;
+      }
+      setTraceStatus(`investigator-${evt.claim_index}`, "done", log);
       break;
+    }
 
     case "judging":
       setStatus("Gemini 4 Argon is weighing the evidence and judging each claim...");
+      createTraceCard("judge", "Judge", "gemini-4-argon", "model-argon");
+      setTraceStatus("judge", "running", "Weighing evidence and judging each claim...");
+      break;
+
+    case "judged":
+      setTraceStatus("judge", "done", `Verdict: ${evt.video_verdict.toUpperCase()} · ${evt.claims_judged} claim(s)`);
       break;
 
     case "generating_explainer":
       setStatus("Gemini 4 Argon is generating an animated explainer of the results...");
+      createTraceCard("explainer", "Explainer Generator", "gemini-4-argon", "model-argon");
+      setTraceStatus("explainer", "running", "Writing animated HTML explainer...");
       break;
 
-    case "rendering":
-      setStatus(`Rendering v${evt.version} in a headless browser...`);
+    case "explainer_generated":
+      setTraceStatus("explainer", "done", "Explainer HTML generated");
       break;
+
+    case "rendering": {
+      setStatus(`Rendering v${evt.version} in a headless browser...`);
+      const fixerId = `fixer-v${evt.version - 1}`;
+      if (traceCards.has(fixerId)) {
+        setTraceStatus(fixerId, "done", "Regenerated explainer");
+      }
+      const criticId = `critic-v${evt.version}`;
+      createTraceCard(criticId, `Critic · v${evt.version}`, "gemini-4-argon", "model-argon");
+      setTraceStatus(criticId, "running", `Rendering v${evt.version} in headless browser...`);
+      break;
+    }
 
     case "critiquing":
       setStatus(`Critic is reviewing v${evt.version}...`);
+      setTraceStatus(`critic-v${evt.version}`, "running", `Critic reviewing v${evt.version}...`);
       break;
 
-    case "critique_result":
+    case "critique_result": {
       if (evt.approved) {
         setStatus(`v${evt.version} approved.`);
       } else {
         setStatus(`Found ${evt.issues.length} issue(s) in v${evt.version}.`);
       }
+      const log = evt.approved
+        ? "Approved"
+        : `Found ${evt.issues.length} issue(s)${evt.issues[0] ? `: ${truncate(evt.issues[0].description, 50)}` : ""}`;
+      setTraceStatus(`critic-v${evt.version}`, "done", log);
       break;
+    }
 
-    case "fixing":
+    case "fixing": {
       setStatus(`Fixing v${evt.from_version} to produce v${evt.to_version}...`);
+      const fixerId = `fixer-v${evt.from_version}`;
+      createTraceCard(fixerId, `Fixer · v${evt.from_version}→v${evt.to_version}`, "gemini-4-argon", "model-argon");
+      setTraceStatus(fixerId, "running", `Fixing v${evt.from_version} → v${evt.to_version}...`);
       break;
+    }
 
     case "done": {
       renderVideoVerdict(evt.result.video_verdict);
@@ -361,16 +601,27 @@ function handleEvent(evt) {
       renderExplainerVersions(evt.result.versions);
       setStatus("Analysis complete.");
 
+      tracePipelineDone = true;
       const versions = evt.result.versions || [];
       const lastVersion = versions[versions.length - 1];
       if (lastVersion && lastVersion.approved && evt.result.run_id) {
         startAgentTask(evt.result.run_id, lastVersion.filename);
+      } else {
+        checkTraceSettled();
       }
       break;
     }
 
     case "error":
       setStatus(evt.message || "Something went wrong.", true);
+      traceOrder.forEach((id) => {
+        const card = traceCards.get(id);
+        if (card && card.status === "running") {
+          setTraceStatus(id, "failed", truncate(evt.message || "Pipeline error", 60));
+        }
+      });
+      tracePipelineDone = true;
+      checkTraceSettled();
       break;
 
     default:
@@ -427,12 +678,21 @@ form.addEventListener("submit", async (event) => {
 
   submitBtn.disabled = true;
   resetResults();
+  resetTrace();
   setStatus("Starting...");
 
   try {
     await streamAnalysis(formData);
   } catch (err) {
     setStatus(err.message || "Something went wrong.", true);
+    traceOrder.forEach((id) => {
+      const card = traceCards.get(id);
+      if (card && card.status === "running") {
+        setTraceStatus(id, "failed", truncate(err.message || "Connection error", 60));
+      }
+    });
+    tracePipelineDone = true;
+    checkTraceSettled();
   } finally {
     submitBtn.disabled = false;
   }
