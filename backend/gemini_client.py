@@ -1,7 +1,10 @@
+import base64
+import io
 import json
 import os
 import tempfile
 import time
+import wave
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -16,6 +19,7 @@ from backend.schemas import (
     ExtractedClaim,
     Finding,
     JudgeResult,
+    NarrationScript,
     Verdict,
 )
 
@@ -23,10 +27,17 @@ EXTRACTOR_MODEL = "gemini-4-argon"
 INVESTIGATOR_MODEL = "gemini-3.8-flash"
 JUDGE_MODEL = "gemini-4-argon"
 EXPLAINER_MODEL = "gemini-4-argon"
+NARRATION_MODEL = "gemini-4-argon"
+TTS_MODEL = "gemini-3.8-flash-tts"
 CRITIC_MODEL = "gemini-4-argon"
 FIXER_MODEL = "gemini-4-argon"
 AGENT = "antigravity-preview-09-2026"
 AGENT_UNDERLYING_MODEL = "gemini-4-argon"
+
+# "Sulafat" is documented as a warm, natural-sounding prebuilt voice — the closest fit to a
+# calm, friendly news-explainer narrator among the available TTS voices.
+NARRATOR_VOICE = "Sulafat"
+_MIN_SLIDE_SECONDS = 6.0
 
 CLAIM_EXTRACTION_PROMPT = """Watch this video and extract every factual claim made in it — \
 by speech or on-screen text. A factual claim is something that could be checked against evidence \
@@ -142,45 +153,63 @@ Editing signals noticed while extracting claims (cuts, repeated segments, overla
 Claims and investigator findings:
 {claims_and_findings_json}"""
 
-EXPLAINER_PROMPT_TEMPLATE = """Generate a single self-contained HTML page that works as a SHORT, FAST \
-animated explainer of a fact-check report, suitable for sharing (e.g. embedded in a page or shown on a \
-projector).
+NARRATION_PROMPT_TEMPLATE = """You are writing the voiceover script for a short, narrated fact-check \
+explainer video. Write ONE narration segment per slide listed below, in order. This is spoken aloud by a \
+calm, friendly news explainer talking to a friend — NOT a reading of on-screen text.
+
+For each segment:
+- Briefly set up what's being addressed, then explain clearly, in your own natural words, why it's true, \
+false, or misleading, what context is missing (if any), and what actually happened — drawing ONLY on the \
+facts given below. Never introduce a new fact, number, or source that isn't already in the data.
+- Use contractions and natural spoken phrasing ("here's the thing", "turns out", "that's not quite right"). \
+Short sentences. A neutral, fair tone — explain, don't editorialize or sensationalize.
+- Keep each segment brief: 1-3 short sentences, something a calm narrator could comfortably say in about \
+6 to 12 seconds.
+- segment_id must exactly match the id given for that slide below, and you must return exactly one segment \
+per slide listed, in the same order.
+
+Slides to narrate, in order:
+{segments_json}"""
+
+EXPLAINER_PROMPT_TEMPLATE = """Generate the SLIDE CONTENT (not a full timing/animation system — that is \
+added automatically afterward) for a narrated fact-check explainer video, suitable for sharing.
 
 Output requirements:
 - Output ONLY the raw HTML document, starting with <!DOCTYPE html>. No markdown, no code fences, no \
 commentary before or after it.
-- Self-contained: all CSS and JavaScript inline in the page via <style> and <script> tags. Do not use any \
-external dependency except, if truly needed, a script from cdnjs.cloudflare.com or cdn.jsdelivr.net/npm/ \
-— prefer plain CSS animations and vanilla JS over any library.
-- Auto-playing: the animation must start automatically on page load with no interaction required, and run \
-for about 14 to 18 seconds total before holding on a final summary frame (looping back to the start after \
-a pause is fine). Keep per-slide dwell time short (2.5-3.5s) so the whole thing stays brisk.
-- Clean, readable design: dark background, large legible type, generous spacing, one idea on screen at a \
-time (a slideshow-style sequence with smooth CSS transitions between frames). Use color to communicate \
-verdicts — green for true/accurate, orange for misleading, red for false, gray for unverifiable — \
-consistently throughout.
-- Responsive enough to still look reasonable in a small embedded iframe around 960x540.
+- Self-contained: all CSS inline via <style>. Do NOT write any <script> tag, any <audio> tag, or any \
+auto-play/timing/transition logic — a harness script handles slide switching, pacing, and narration audio \
+automatically after your HTML is generated. Just build clean, static, styled markup for each slide.
+- Exactly one slide per segment listed below, in the same order, each a top-level element with the exact \
+attribute `data-segment="<segment_id>"` given for it (e.g. `<section class="slide" data-segment="claim_1">`). \
+Do not add, merge, skip, or reorder slides.
+- Every slide element needs class="slide" alongside its data-segment attribute (the harness toggles \
+visibility via a `.slide.active` CSS rule it adds itself — you do not need to handle visibility).
+- Clean, readable design: dark background, large legible type, generous spacing, one idea per slide. Use \
+color to communicate verdicts — green for true/accurate, orange for misleading, red for false, gray for \
+unverifiable — consistently throughout.
+- Responsive enough to still look reasonable in an embedded iframe around 960x540.
 
-The animation sequence should show, in this order:
-1. The video's overall verdict as a bold title card, with the misleading techniques used, if any.
-2. Each key claim with its individual verdict badge and a one-line reason (cap this at the 3 most \
-important claims if there are more — prefer the ones that drive the overall verdict). The verdict badge \
-is about the substance of the claim, not whether someone said it; if a claim has a non-null attribution, \
-show a small separate "attribution: accurate" or "attribution: inaccurate" tag next to it.
-3. If the video is misleading or false, a card explaining how it misleads, using the techniques and \
-explanations given.
-4. A "What actually happened" card with the true story in plain language, kept to 2-3 sentences.
-5. A final card listing the main sources (title and domain, not full URLs) used to verify the claims, \
-capped at 4 sources.
+Slide content, in order (write the visual content for each; keep text concise since it's paced by narration, \
+not reading speed):
+1. overall_verdict: the video's overall verdict as a bold title card, with the misleading techniques used, \
+if any.
+2. One slide per claim below with its verdict badge and a one-line reason. The verdict badge is about the \
+substance of the claim, not whether someone said it; if a claim has a non-null attribution, show a small \
+separate "attribution: accurate" or "attribution: inaccurate" tag next to it.
+3. how_it_misleads (only present if listed below): a card explaining how the video misleads, using the \
+techniques and explanations given.
+4. what_happened: a "What actually happened" card with the true story in plain language.
+5. sources: a final card listing the main sources (title and domain, not full URLs).
 
-Keep this short and simple — fewer slides, less text per slide, and a simple CSS transition (opacity/\
-transform fade) are all fine. Here is the fact-check data to visualize:
-{data_json}"""
+Slides to build (segment_id, kind, and the data for each), in order:
+{segments_json}"""
 
-CRITIC_PROMPT_TEMPLATE = """You are a strict critic reviewing a short animated video explainer generated \
-from a fact-check report. Watch the attached recording and compare it against the ground-truth fact-check \
-data below. Be strict: this explainer will be shown to the public, so anything inaccurate, unfair, \
-unreadable, or incomplete must be caught.
+CRITIC_PROMPT_TEMPLATE = """You are a strict critic reviewing a short narrated video explainer generated \
+from a fact-check report. Watch the attached recording (visual pacing only — the audio narration text is \
+given to you as a script below, since it is given to you as written text rather than something you need to \
+transcribe) and compare both against the ground-truth fact-check data below. Be strict: this explainer will \
+be shown to the public, so anything inaccurate, unfair, unreadable, too fast, or incomplete must be caught.
 
 Run exactly these checks and report pass/fail with a short note for each:
 - claims_and_verdicts_match: every number, confidence, verdict, and attribution tag (when present) shown \
@@ -191,10 +220,17 @@ statistics).
 way that changes their meaning.
 - overall_verdict_shown_correctly: the video's overall/title verdict and techniques match \
 video_verdict exactly.
-- language_fair_and_neutral: the wording is neutral and factual, not sensationalized, biased, or \
-editorializing beyond what the ground-truth explanation says.
+- language_fair_and_neutral: the wording (on-screen and narrated) is neutral and factual, not \
+sensationalized, biased, or editorializing beyond what the ground-truth explanation says.
 - text_readable: no text is cut off, overlapping, or disappears before a viewer could reasonably read it.
 - sources_shown: the main sources from the ground-truth data are visibly listed somewhere in the video.
+- narration_matches_verdicts: each narration segment below accurately reflects that slide's verdict, \
+explanation, and sources from the ground-truth data, introduces no new facts, numbers, or sources not in \
+the ground-truth data, and is natural, conversational spoken language (not a flat reading of the on-screen \
+text).
+- pacing_not_too_fast: in the recording, each slide stays on screen long enough to comfortably read it and \
+for its narration segment to finish (every segment's duration below is at least 6 seconds) — nothing looks \
+rushed or cut off early.
 
 Then list every specific issue you found (empty list if none), each with:
 - slide: which slide/card it's on (e.g. "Overall verdict", "Claim 2", "Sources")
@@ -203,14 +239,20 @@ Then list every specific issue you found (empty list if none), each with:
 
 Set approved to true only if every check passed and the issues list is empty. Otherwise false.
 
+Narration script (segment_id, text, and on-screen duration in seconds for each slide):
+{narration_json}
+
 Ground-truth fact-check data:
 {data_json}"""
 
-FIXER_PROMPT_TEMPLATE = """You previously generated the self-contained HTML explainer below. A strict \
-critic reviewed a recording of it and found the following issues. Regenerate a complete, corrected \
-version of the HTML page that fixes every issue while keeping the same overall design, structure, and \
-output requirements (self-contained, auto-playing, 14-18 seconds total, dark theme, verdict colors, \
-slide sequence) as the original. Keep it short — do not add slides or length while fixing issues.
+FIXER_PROMPT_TEMPLATE = """You previously generated the slide-content HTML below for a narrated fact-check \
+explainer. A strict critic reviewed a recording of it (paced and narrated by a harness added automatically \
+after your HTML — do not add your own timing, script, or audio tags) and found the following issues. \
+Regenerate a complete, corrected version of the HTML that fixes every visual/content issue while keeping \
+the same structure and output requirements as the original: self-contained CSS only (no <script>, no \
+<audio>), exactly one slide per segment with the same `data-segment="..."` attributes in the same order, \
+dark theme, verdict colors. Note: issues about pacing or narration audio cannot be fixed by you — they are \
+handled by the harness, not your HTML; only fix visual/content/text issues. Keep it short.
 
 Output ONLY the raw corrected HTML document, starting with <!DOCTYPE html>. No markdown, no code fences, \
 no commentary.
@@ -229,15 +271,21 @@ execution, file management, and web access. Complete BOTH tasks below, then writ
 
 TASK 1 — Render a shareable video:
 The file /workspace/explainer.html is a self-contained, auto-playing HTML animation (pure CSS/JS, no \
-build step). Render it to a shareable MP4:
+build step), and /workspace/narration.wav.b64 is the base64-encoded narration audio track, already timed \
+to match the page's silent visual pacing exactly. Render a shareable MP4 WITH this narration audio muxed in:
 1. Install what you need: `pip install playwright && playwright install --with-deps chromium`. Check \
 whether ffmpeg is already available with `which ffmpeg` before trying to install it (e.g. \
 `apt-get update && apt-get install -y ffmpeg` if missing).
-2. Use Playwright to open /workspace/explainer.html headless at 960x540 and record one full playthrough \
-(about 25-30 seconds) using Playwright's built-in video recording (record_video_dir).
-3. Convert the resulting .webm to /workspace/explainer.mp4 with ffmpeg \
-(e.g. `ffmpeg -y -i input.webm -c:v libx264 -pix_fmt yuv420p /workspace/explainer.mp4`).
-4. Confirm /workspace/explainer.mp4 exists and is not 0 bytes.
+2. Decode the audio: `base64 -d /workspace/narration.wav.b64 > /workspace/narration.wav`.
+3. Use Playwright to open /workspace/explainer.html headless at 960x540 and record one full playthrough \
+(about {total_duration_seconds} seconds — wait at least that long before closing the page) using \
+Playwright's built-in video recording (record_video_dir).
+4. Mux the recorded video with /workspace/narration.wav into /workspace/explainer.mp4 with ffmpeg, e.g. \
+`ffmpeg -y -i input.webm -i /workspace/narration.wav -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest \
+/workspace/explainer.mp4`. The video is silent (muted auto-play) but its pacing already matches \
+narration.wav exactly, so this produces a correctly synced narrated video.
+5. Confirm /workspace/explainer.mp4 exists, is not 0 bytes, and has both a video and an audio stream \
+(e.g. check with `ffprobe -v error -show_entries stream=codec_type /workspace/explainer.mp4`).
 
 TASK 2 — Verify sources:
 Below is a numbered list of EXACTLY {num_sources} source citations used in a fact-check, each tied to a \
@@ -283,6 +331,8 @@ _EXTRACTION_TIMEOUT_SECONDS = 1200
 _INVESTIGATION_TIMEOUT_SECONDS = 180
 _JUDGE_TIMEOUT_SECONDS = 1200
 _EXPLAINER_TIMEOUT_SECONDS = 1200
+_NARRATION_TIMEOUT_SECONDS = 300
+_TTS_TIMEOUT_SECONDS = 120
 _CRITIC_TIMEOUT_SECONDS = 1200
 _FIXER_TIMEOUT_SECONDS = 1200
 _AGENT_TIMEOUT_SECONDS = 1800
@@ -504,9 +554,236 @@ def _build_explainer_data(claims: list[Claim], judge_result: JudgeResult) -> dic
     }
 
 
-def _generate_explainer_html(client: genai.Client, claims: list[Claim], judge_result: JudgeResult) -> str:
+def _segment_plan(data: dict, max_claims: int = 3) -> list[dict]:
+    """The fixed, deterministic slide/segment plan shared by narration and explainer generation."""
+    verdict_priority = {"false": 0, "misleading": 1, "true": 2, "unverifiable": 3}
+    ranked_claims = sorted(
+        enumerate(data["claims"]), key=lambda pair: verdict_priority.get(pair[1]["verdict"], 4)
+    )
+    selected_claims = [c for _, c in ranked_claims[:max_claims]]
+
+    segments = [{"segment_id": "overall_verdict", "kind": "overall_verdict", "payload": data["video_verdict"]}]
+    for i, claim in enumerate(selected_claims):
+        segments.append({"segment_id": f"claim_{i}", "kind": "claim", "payload": claim})
+    if data["video_verdict"]["verdict"] != "accurate":
+        segments.append(
+            {
+                "segment_id": "how_it_misleads",
+                "kind": "how_it_misleads",
+                "payload": {
+                    "techniques": data["video_verdict"]["techniques"],
+                    "explanation": data["video_verdict"]["explanation"],
+                },
+            }
+        )
+    segments.append({"segment_id": "what_happened", "kind": "what_happened", "payload": data["what_actually_happened"]})
+    segments.append({"segment_id": "sources", "kind": "sources", "payload": data["main_sources"]})
+    return segments
+
+
+def _generate_narration_script(client: genai.Client, segments: list[dict]) -> NarrationScript:
+    prompt = NARRATION_PROMPT_TEMPLATE.format(
+        segments_json=json.dumps([{"segment_id": s["segment_id"], "payload": s["payload"]} for s in segments], indent=2)
+    )
+    interaction = client.interactions.create(
+        model=NARRATION_MODEL,
+        input=prompt,
+        response_format={
+            "type": "text",
+            "mime_type": "application/json",
+            "schema": NarrationScript.model_json_schema(),
+        },
+        generation_config={"thinking_level": "low"},
+        background=True,
+    )
+    interaction = _await_interaction(client, interaction, _NARRATION_TIMEOUT_SECONDS)
+    return NarrationScript.model_validate(_parse_json_output(interaction))
+
+
+def _audio_content_to_wav(audio) -> tuple[bytes, float]:
+    """Normalize an Interaction's output_audio into (wav_bytes, duration_seconds)."""
+    raw = base64.b64decode(audio.data) if isinstance(audio.data, str) else audio.data
+    sample_rate = audio.sample_rate or 24000
+    channels = audio.channels or 1
+    sample_width = 2  # 16-bit PCM, standard for Gemini TTS output
+
+    if audio.mime_type and "wav" in audio.mime_type:
+        with wave.open(io.BytesIO(raw), "rb") as wf:
+            duration = wf.getnframes() / float(wf.getframerate())
+        return raw, duration
+
+    # Raw PCM (e.g. audio/l16): wrap it in a WAV container ourselves.
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(channels)
+        wf.setsampwidth(sample_width)
+        wf.setframerate(sample_rate)
+        wf.writeframes(raw)
+    duration = len(raw) / float(sample_rate * channels * sample_width)
+    return buf.getvalue(), duration
+
+
+def _synthesize_segment_audio(client: genai.Client, text: str) -> tuple[bytes, float]:
+    interaction = client.interactions.create(
+        model=TTS_MODEL,
+        input=text,
+        generation_config={"speech_config": {"voice": NARRATOR_VOICE}},
+    )
+    interaction = _await_interaction(client, interaction, _TTS_TIMEOUT_SECONDS)
+    if not interaction.output_audio:
+        raise RuntimeError("TTS call returned no audio")
+    return _audio_content_to_wav(interaction.output_audio)
+
+
+def _generate_narration(client: genai.Client, claims: list[Claim], judge_result: JudgeResult) -> list[dict]:
+    """Write the narration script and synthesize each segment's audio.
+
+    Returns an ordered list of {segment_id, kind, payload, text, duration_seconds, wav_bytes,
+    audio_data_uri}, one per slide in the fixed segment plan.
+    """
     data = _build_explainer_data(claims, judge_result)
-    prompt = EXPLAINER_PROMPT_TEMPLATE.format(data_json=json.dumps(data, indent=2))
+    segments = _segment_plan(data)
+    script = _generate_narration_script(client, segments)
+    text_by_id = {s.segment_id: s.text for s in script.segments}
+
+    narration: list[dict | None] = [None] * len(segments)
+    with ThreadPoolExecutor(max_workers=min(len(segments), _MAX_PARALLEL_INVESTIGATIONS)) as pool:
+        future_to_index = {
+            pool.submit(_synthesize_segment_audio, client, text_by_id.get(s["segment_id"], s["kind"])): i
+            for i, s in enumerate(segments)
+        }
+        for future in as_completed(future_to_index):
+            i = future_to_index[future]
+            wav_bytes, duration = future.result()
+            segment = segments[i]
+            narration[i] = {
+                **segment,
+                "text": text_by_id.get(segment["segment_id"], ""),
+                "duration_seconds": max(duration, _MIN_SLIDE_SECONDS),
+                "wav_bytes": wav_bytes,
+                "audio_data_uri": "data:audio/wav;base64," + base64.b64encode(wav_bytes).decode("ascii"),
+            }
+    return narration
+
+
+def _inject_narration_harness(raw_html: str, narration: list[dict]) -> str:
+    """Append a deterministic, Python-authored harness: audio pool, play/mute controls, and a
+    slideshow timer driven by each segment's measured duration. Keeps all timing/audio sync out
+    of LLM-generated code."""
+    order = [n["segment_id"] for n in narration]
+    durations_ms = {n["segment_id"]: int(n["duration_seconds"] * 1000) for n in narration}
+
+    audio_pool = "\n".join(
+        f'<audio data-segment="{n["segment_id"]}" src="{n["audio_data_uri"]}" preload="auto"></audio>'
+        for n in narration
+    )
+
+    harness = f"""
+<style>
+.slide {{ display: none; }}
+.slide.active {{ display: block; animation: narration-fade 400ms ease; }}
+@keyframes narration-fade {{ from {{ opacity: 0; }} to {{ opacity: 1; }} }}
+#narration-controls {{
+  position: fixed; top: 10px; right: 10px; z-index: 9999; display: flex; gap: 8px;
+  font-family: -apple-system, Helvetica, Arial, sans-serif;
+}}
+#narration-controls button {{
+  background: rgba(20,20,20,0.85); color: #fff; border: 1px solid rgba(255,255,255,0.3);
+  border-radius: 6px; padding: 6px 12px; font-size: 0.8rem; cursor: pointer;
+}}
+#narration-controls button:hover {{ border-color: #fff; }}
+</style>
+<div id="narration-controls">
+  <button type="button" id="play-narration-btn">&#9654; Play with narration</button>
+  <button type="button" id="mute-toggle-btn">&#128264; Mute</button>
+</div>
+<div id="audio-pool" hidden>
+{audio_pool}
+</div>
+<script>
+(function () {{
+  var ORDER = {json.dumps(order)};
+  var DURATIONS = {json.dumps(durations_ms)};
+  var slides = {{}}, audios = {{}};
+  ORDER.forEach(function (id) {{
+    slides[id] = document.querySelector('.slide[data-segment="' + id + '"]');
+    audios[id] = document.querySelector('#audio-pool [data-segment="' + id + '"]');
+  }});
+  var idx = 0, timer = null, narrationMode = false, muted = false;
+
+  function stopAllAudio() {{
+    ORDER.forEach(function (id) {{
+      var a = audios[id];
+      if (a) {{ a.pause(); a.currentTime = 0; }}
+    }});
+  }}
+
+  function showSlide(i) {{
+    ORDER.forEach(function (id, j) {{
+      if (slides[id]) slides[id].classList.toggle('active', j === i);
+    }});
+  }}
+
+  function advance() {{
+    if (idx >= ORDER.length) idx = 0;
+    showSlide(idx);
+    var id = ORDER[idx];
+    if (narrationMode && audios[id] && !muted) {{
+      audios[id].currentTime = 0;
+      audios[id].play().catch(function () {{}});
+    }}
+    clearTimeout(timer);
+    timer = setTimeout(function () {{ idx++; advance(); }}, DURATIONS[id] || 6000);
+  }}
+
+  function startVisual() {{
+    clearTimeout(timer);
+    idx = 0;
+    narrationMode = false;
+    advance();
+  }}
+
+  function startNarration() {{
+    clearTimeout(timer);
+    stopAllAudio();
+    idx = 0;
+    narrationMode = true;
+    advance();
+  }}
+
+  document.addEventListener('DOMContentLoaded', startVisual);
+
+  var playBtn = document.getElementById('play-narration-btn');
+  if (playBtn) playBtn.addEventListener('click', startNarration);
+
+  var muteBtn = document.getElementById('mute-toggle-btn');
+  if (muteBtn) {{
+    muteBtn.addEventListener('click', function () {{
+      muted = !muted;
+      muteBtn.innerHTML = muted ? '&#128263; Unmute' : '&#128264; Mute';
+      ORDER.forEach(function (id) {{ if (audios[id]) audios[id].muted = muted; }});
+      if (!muted && narrationMode) {{
+        var id = ORDER[idx];
+        if (audios[id]) audios[id].play().catch(function () {{}});
+      }}
+    }});
+  }}
+}})();
+</script>
+"""
+    if "</body>" in raw_html:
+        return raw_html.replace("</body>", harness + "</body>")
+    return raw_html + harness
+
+
+def _generate_explainer_html(client: genai.Client, segments: list[dict]) -> str:
+    """Generate the raw, harness-free slide HTML (no script/audio) for the given segment plan."""
+    prompt = EXPLAINER_PROMPT_TEMPLATE.format(
+        segments_json=json.dumps(
+            [{"segment_id": s["segment_id"], "kind": s["kind"], "payload": s["payload"]} for s in segments],
+            indent=2,
+        )
+    )
     interaction = client.interactions.create(
         model=EXPLAINER_MODEL,
         input=prompt,
@@ -517,7 +794,7 @@ def _generate_explainer_html(client: genai.Client, claims: list[Claim], judge_re
     return _strip_code_fence(interaction.output_text, "html")
 
 
-def _render_explainer_video(html_path: str, video_dir: str) -> str:
+def _render_explainer_video(html_path: str, video_dir: str, wait_ms: int) -> str:
     """Render an explainer HTML file in headless Chromium and record one playthrough."""
     from playwright.sync_api import sync_playwright
 
@@ -530,7 +807,7 @@ def _render_explainer_video(html_path: str, video_dir: str) -> str:
         )
         page = context.new_page()
         page.goto(f"file://{Path(html_path).resolve()}")
-        page.wait_for_timeout(_RENDER_WAIT_MS)
+        page.wait_for_timeout(wait_ms)
         context.close()
         browser.close()
 
@@ -545,11 +822,19 @@ def _critique_explainer(
     video_path: str,
     claims: list[Claim],
     judge_result: JudgeResult,
+    narration: list[dict],
 ) -> Critique:
     data = _build_explainer_data(claims, judge_result)
+    narration_json = json.dumps(
+        [
+            {"segment_id": n["segment_id"], "text": n["text"], "duration_seconds": round(n["duration_seconds"], 1)}
+            for n in narration
+        ],
+        indent=2,
+    )
     uploaded = client.files.upload(file=video_path)
     uploaded = _await_file_active(client, uploaded)
-    prompt = CRITIC_PROMPT_TEMPLATE.format(data_json=json.dumps(data, indent=2))
+    prompt = CRITIC_PROMPT_TEMPLATE.format(data_json=json.dumps(data, indent=2), narration_json=narration_json)
     interaction = client.interactions.create(
         model=CRITIC_MODEL,
         input=[
@@ -570,7 +855,7 @@ def _critique_explainer(
 
 def _fix_explainer(
     client: genai.Client,
-    current_html: str,
+    current_raw_html: str,
     critique: Critique,
     claims: list[Claim],
     judge_result: JudgeResult,
@@ -579,7 +864,7 @@ def _fix_explainer(
     prompt = FIXER_PROMPT_TEMPLATE.format(
         issues_json=json.dumps([i.model_dump() for i in critique.issues], indent=2),
         data_json=json.dumps(data, indent=2),
-        current_html=current_html,
+        current_html=current_raw_html,
     )
     interaction = client.interactions.create(
         model=FIXER_MODEL,
@@ -596,28 +881,34 @@ def _run_render_critique_fix(
     explainer_dir: Path,
     claims: list[Claim],
     judge_result: JudgeResult,
-    initial_html: str,
+    narration: list[dict],
+    initial_raw_html: str,
 ) -> Iterator[dict]:
-    """Render, critique, and fix an explainer for up to _MAX_RENDER_CRITIQUE_ROUNDS rounds.
+    """Render, critique, and fix a narrated explainer for up to _MAX_RENDER_CRITIQUE_ROUNDS rounds.
 
-    Writes each version to explainer_dir/v{n}.html and yields progress events, ending with a
-    'loop_done' event carrying every version's filename, approval, checks, and issues.
+    Each round injects the deterministic narration harness fresh onto the current raw (LLM-authored,
+    harness-free) slide HTML before writing/rendering it, so the fixer only ever touches slide
+    content, never the harness. Writes each version to explainer_dir/v{n}.html and yields progress
+    events, ending with a 'loop_done' event carrying every version's filename, approval, checks,
+    and issues.
     """
     explainer_dir.mkdir(parents=True, exist_ok=True)
-    html = initial_html
+    wait_ms = sum(int(n["duration_seconds"] * 1000) for n in narration) + 2000
+    raw_html = initial_raw_html
     versions: list[dict] = []
     version = 1
 
     while True:
         filename = f"v{version}.html"
+        html = _inject_narration_harness(raw_html, narration)
         (explainer_dir / filename).write_text(html, encoding="utf-8")
 
         yield {"stage": "rendering", "version": version}
         with tempfile.TemporaryDirectory() as video_dir:
-            video_path = _render_explainer_video(str(explainer_dir / filename), video_dir)
+            video_path = _render_explainer_video(str(explainer_dir / filename), video_dir, wait_ms)
 
             yield {"stage": "critiquing", "version": version}
-            critique = _critique_explainer(client, video_path, claims, judge_result)
+            critique = _critique_explainer(client, video_path, claims, judge_result, narration)
 
         checks = [c.model_dump() for c in critique.checks]
         issues = [i.model_dump() for i in critique.issues]
@@ -635,7 +926,7 @@ def _run_render_critique_fix(
             break
 
         yield {"stage": "fixing", "from_version": version, "to_version": version + 1}
-        html = _fix_explainer(client, html, critique, claims, judge_result)
+        raw_html = _fix_explainer(client, raw_html, critique, claims, judge_result)
         version += 1
 
     yield {"stage": "loop_done", "versions": versions}
@@ -658,6 +949,55 @@ def _build_agent_sources_payload(claims: list[Claim], verdicts: list[Verdict]) -
     return payload
 
 
+def _extract_narration_from_html(html: str) -> list[dict]:
+    """Recover (segment_id, duration_ms, wav_bytes) in slide order from a harness-injected explainer."""
+    import re
+
+    order_match = re.search(r"var ORDER = (\[.*?\]);", html)
+    durations_match = re.search(r"var DURATIONS = (\{.*?\});", html)
+    if not order_match or not durations_match:
+        return []
+    order = json.loads(order_match.group(1))
+    durations_ms = json.loads(durations_match.group(1))
+
+    audio_by_id = dict(re.findall(r'<audio data-segment="([^"]+)" src="data:audio/wav;base64,([^"]+)"', html))
+
+    items = []
+    for segment_id in order:
+        b64 = audio_by_id.get(segment_id)
+        if not b64:
+            continue
+        items.append(
+            {
+                "segment_id": segment_id,
+                "duration_ms": durations_ms.get(segment_id, 6000),
+                "wav_bytes": base64.b64decode(b64),
+            }
+        )
+    return items
+
+
+def _build_combined_narration_wav(items: list[dict]) -> bytes:
+    """Concatenate per-segment narration audio, silence-padded to each slide's exact duration."""
+    with wave.open(io.BytesIO(items[0]["wav_bytes"]), "rb") as first:
+        n_channels, sample_width, framerate = first.getnchannels(), first.getsampwidth(), first.getframerate()
+
+    out_buf = io.BytesIO()
+    with wave.open(out_buf, "wb") as out:
+        out.setnchannels(n_channels)
+        out.setsampwidth(sample_width)
+        out.setframerate(framerate)
+        for item in items:
+            with wave.open(io.BytesIO(item["wav_bytes"]), "rb") as seg:
+                frames = seg.readframes(seg.getnframes())
+            out.writeframes(frames)
+            target_frames = round(item["duration_ms"] / 1000 * framerate)
+            segment_frames = len(frames) // (n_channels * sample_width)
+            silence_frames = max(0, target_frames - segment_frames)
+            out.writeframes(b"\x00" * (silence_frames * n_channels * sample_width))
+    return out_buf.getvalue()
+
+
 def run_verification_agent(
     html_path: str,
     video_output_path: str,
@@ -673,16 +1013,30 @@ def run_verification_agent(
     html = Path(html_path).read_text(encoding="utf-8")
     sources_payload = _build_agent_sources_payload(claims, verdicts)
 
+    narration_items = _extract_narration_from_html(html)
+    total_duration_seconds = round(sum(item["duration_ms"] for item in narration_items) / 1000) if narration_items else 30
+    audio_write_cmd = ""
+    if narration_items:
+        combined_wav = _build_combined_narration_wav(narration_items)
+        wav_b64 = base64.b64encode(combined_wav).decode("ascii")
+        audio_write_cmd = (
+            f"cat > /workspace/narration.wav.b64 << '{_AGENT_WRITE_FILE_MARKER}_AUDIO'\n"
+            f"{wav_b64}\n{_AGENT_WRITE_FILE_MARKER}_AUDIO\n\n"
+        )
+
     write_file_cmd = (
         f"mkdir -p /workspace && cat > /workspace/explainer.html << '{_AGENT_WRITE_FILE_MARKER}'\n"
-        f"{html}\n{_AGENT_WRITE_FILE_MARKER}\n"
+        f"{html}\n{_AGENT_WRITE_FILE_MARKER}\n\n"
+        + audio_write_cmd
     )
     prompt = (
-        "First, run this exact bash command to create the input file (do not modify its contents):\n\n"
+        "First, run this exact bash command to create the input files (do not modify their contents):\n\n"
         + write_file_cmd
         + "\n\n"
         + AGENT_VERIFICATION_PROMPT_TEMPLATE.format(
-            num_sources=len(sources_payload), sources_json=json.dumps(sources_payload, indent=2)
+            num_sources=len(sources_payload),
+            sources_json=json.dumps(sources_payload, indent=2),
+            total_duration_seconds=total_duration_seconds,
         )
     )
 
@@ -783,13 +1137,23 @@ def run_pipeline(
     judge_result = _judge_claims(client, claims, findings, extraction.editing_signals)
     yield {"stage": "judged", "result": judge_result.model_dump()}
 
+    yield {"stage": "narrating"}
+    narration = _generate_narration(client, claims, judge_result)
+    yield {
+        "stage": "narrated",
+        "segments": [
+            {"segment_id": n["segment_id"], "text": n["text"], "duration_seconds": round(n["duration_seconds"], 1)}
+            for n in narration
+        ],
+    }
+
     yield {"stage": "generating_explainer"}
-    explainer_html = _generate_explainer_html(client, claims, judge_result)
+    explainer_html = _generate_explainer_html(client, narration)
     yield {"stage": "explainer_generated"}
 
     versions: list[dict] = []
     if explainer_dir is not None:
-        for event in _run_render_critique_fix(client, explainer_dir, claims, judge_result, explainer_html):
+        for event in _run_render_critique_fix(client, explainer_dir, claims, judge_result, narration, explainer_html):
             if event["stage"] == "loop_done":
                 versions = event["versions"]
             else:

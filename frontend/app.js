@@ -137,6 +137,7 @@ const ROLE_ICONS = {
   fixer:
     '<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l2.6-2.6a4 4 0 0 1-5.3 5.3L6.7 20.3a2 2 0 1 1-2.8-2.8L12.2 9a4 4 0 0 1 5.3-5.3l-2.6 2.6Z"/>',
   agent: '<path d="M12 2 4 5v6c0 5 3.5 9 8 11 4.5-2 8-6 8-11V5l-8-3Z"/>',
+  narrator: '<rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5M8 22h8"/>',
 };
 
 function roleIconSvg(role) {
@@ -626,9 +627,19 @@ function handleEvent(evt) {
       summaryText.textContent = evt.result.what_actually_happened;
       summarySection.hidden = !evt.result.what_actually_happened;
       renderVerdicts(evt.result.verdicts || []);
-      setStatus("Verdict ready. Generating a shareable explainer...");
+      setStatus("Verdict ready. Writing the narration script...");
       break;
     }
+
+    case "narrating":
+      createTraceCard("narrator", "Narrator", "gemini-4-argon + tts", "model-argon", "narrator");
+      setTraceStatus("narrator", "running", "Writing narration script and recording voiceover...");
+      break;
+
+    case "narrated":
+      setTraceStatus("narrator", "done", `Recorded ${evt.segments.length} narration segment(s)`);
+      setStatus("Narration ready. Generating a shareable explainer...");
+      break;
 
     case "generating_explainer":
       setStatus("Gemini 4 Argon is generating an animated explainer of the results...");

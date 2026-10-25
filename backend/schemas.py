@@ -101,6 +101,15 @@ class JudgeResult(BaseModel):
     )
 
 
+class NarrationSegment(BaseModel):
+    segment_id: str = Field(description="Must match one of the segment ids given in the prompt, in order")
+    text: str = Field(description="The narration script for this segment: natural, conversational, spoken-style")
+
+
+class NarrationScript(BaseModel):
+    segments: list[NarrationSegment]
+
+
 CritiqueCheckName = Literal[
     "claims_and_verdicts_match",
     "no_missing_or_misrepresented_claims",
@@ -108,6 +117,8 @@ CritiqueCheckName = Literal[
     "language_fair_and_neutral",
     "text_readable",
     "sources_shown",
+    "narration_matches_verdicts",
+    "pacing_not_too_fast",
 ]
 
 

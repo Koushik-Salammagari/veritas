@@ -24,6 +24,7 @@
   --role-critic: #ffb020;
   --role-fixer: #ff9f4a;
   --role-agent: #38d9c9;
+  --role-narrator: #6fe0a0;
   --font-display: "Oswald", "Arial Narrow", sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
@@ -959,6 +960,7 @@ tr:last-child td {
 .trace-card-icon.role-critic { background: var(--role-critic); }
 .trace-card-icon.role-fixer { background: var(--role-fixer); }
 .trace-card-icon.role-agent { background: var(--role-agent); }
+.trace-card-icon.role-narrator { background: var(--role-narrator); }
 
 .trace-card.status-running .trace-card-icon {
   animation: icon-pulse 1.3s ease-in-out infinite;
