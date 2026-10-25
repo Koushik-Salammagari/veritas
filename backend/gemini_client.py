@@ -1,17 +1,29 @@
 import json
 import os
+import tempfile
 import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 
 from google import genai
 
-from backend.schemas import Claim, ClaimExtractionResult, EditingSignal, ExtractedClaim, Finding, JudgeResult
+from backend.schemas import (
+    Claim,
+    ClaimExtractionResult,
+    Critique,
+    EditingSignal,
+    ExtractedClaim,
+    Finding,
+    JudgeResult,
+)
 
 EXTRACTOR_MODEL = "gemini-4-argon"
 INVESTIGATOR_MODEL = "gemini-3.8-flash"
 JUDGE_MODEL = "gemini-4-argon"
 EXPLAINER_MODEL = "gemini-4-argon"
+CRITIC_MODEL = "gemini-4-argon"
+FIXER_MODEL = "gemini-4-argon"
 
 CLAIM_EXTRACTION_PROMPT = """Watch this video and extract every factual claim made in it — \
 by speech or on-screen text. A factual claim is something that could be checked against evidence \
@@ -123,6 +135,52 @@ explanations given.
 Here is the fact-check data to visualize:
 {data_json}"""
 
+CRITIC_PROMPT_TEMPLATE = """You are a strict critic reviewing a short animated video explainer generated \
+from a fact-check report. Watch the attached recording and compare it against the ground-truth fact-check \
+data below. Be strict: this explainer will be shown to the public, so anything inaccurate, unfair, \
+unreadable, or incomplete must be caught.
+
+Run exactly these checks and report pass/fail with a short note for each:
+- claims_and_verdicts_match: every number, confidence, and verdict shown in the video matches the \
+ground-truth data exactly (no rounding errors, no changed verdicts, no invented statistics).
+- no_missing_or_misrepresented_claims: every claim listed in the ground-truth data appears in the video \
+(or, if claims were capped, the video doesn't claim to show all of them) and none are paraphrased in a \
+way that changes their meaning.
+- overall_verdict_shown_correctly: the video's overall/title verdict and techniques match \
+video_verdict exactly.
+- language_fair_and_neutral: the wording is neutral and factual, not sensationalized, biased, or \
+editorializing beyond what the ground-truth explanation says.
+- text_readable: no text is cut off, overlapping, or disappears before a viewer could reasonably read it.
+- sources_shown: the main sources from the ground-truth data are visibly listed somewhere in the video.
+
+Then list every specific issue you found (empty list if none), each with:
+- slide: which slide/card it's on (e.g. "Overall verdict", "Claim 2", "Sources")
+- timestamp: approximate MM:SS in the recording where it appears
+- description: exactly what is wrong and, if possible, what it should say instead
+
+Set approved to true only if every check passed and the issues list is empty. Otherwise false.
+
+Ground-truth fact-check data:
+{data_json}"""
+
+FIXER_PROMPT_TEMPLATE = """You previously generated the self-contained HTML explainer below. A strict \
+critic reviewed a recording of it and found the following issues. Regenerate a complete, corrected \
+version of the HTML page that fixes every issue while keeping the same overall design, structure, and \
+output requirements (self-contained, auto-playing, 20-30 seconds, dark theme, verdict colors, slide \
+sequence) as the original.
+
+Output ONLY the raw corrected HTML document, starting with <!DOCTYPE html>. No markdown, no code fences, \
+no commentary.
+
+Issues to fix:
+{issues_json}
+
+Ground-truth fact-check data (for re-verifying anything you change):
+{data_json}
+
+Current HTML to fix:
+{current_html}"""
+
 _FILE_POLL_INTERVAL_SECONDS = 3
 _FILE_POLL_TIMEOUT_SECONDS = 300
 _INTERACTION_POLL_INTERVAL_SECONDS = 5
@@ -130,8 +188,13 @@ _EXTRACTION_TIMEOUT_SECONDS = 1200
 _INVESTIGATION_TIMEOUT_SECONDS = 180
 _JUDGE_TIMEOUT_SECONDS = 1200
 _EXPLAINER_TIMEOUT_SECONDS = 1200
+_CRITIC_TIMEOUT_SECONDS = 1200
+_FIXER_TIMEOUT_SECONDS = 1200
 _MAX_PARALLEL_INVESTIGATIONS = 8
 _MAX_EXPLAINER_SOURCES = 6
+_MAX_RENDER_CRITIQUE_ROUNDS = 3
+_RENDER_WAIT_MS = 28000
+_RENDER_VIEWPORT = {"width": 960, "height": 540}
 
 
 def _client() -> genai.Client:
@@ -341,7 +404,135 @@ def _generate_explainer_html(client: genai.Client, claims: list[Claim], judge_re
     return _strip_code_fence(interaction.output_text, "html")
 
 
-def run_pipeline(youtube_url: str | None = None, file_path: str | None = None) -> Iterator[dict]:
+def _render_explainer_video(html_path: str, video_dir: str) -> str:
+    """Render an explainer HTML file in headless Chromium and record one playthrough."""
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        context = browser.new_context(
+            viewport=_RENDER_VIEWPORT,
+            record_video_dir=video_dir,
+            record_video_size=_RENDER_VIEWPORT,
+        )
+        page = context.new_page()
+        page.goto(f"file://{Path(html_path).resolve()}")
+        page.wait_for_timeout(_RENDER_WAIT_MS)
+        context.close()
+        browser.close()
+
+    videos = sorted(Path(video_dir).glob("*.webm"), key=lambda p: p.stat().st_mtime)
+    if not videos:
+        raise RuntimeError("Playwright did not produce a video recording of the explainer")
+    return str(videos[-1])
+
+
+def _critique_explainer(
+    client: genai.Client,
+    video_path: str,
+    claims: list[Claim],
+    judge_result: JudgeResult,
+) -> Critique:
+    data = _build_explainer_data(claims, judge_result)
+    uploaded = client.files.upload(file=video_path)
+    uploaded = _await_file_active(client, uploaded)
+    prompt = CRITIC_PROMPT_TEMPLATE.format(data_json=json.dumps(data, indent=2))
+    interaction = client.interactions.create(
+        model=CRITIC_MODEL,
+        input=[
+            {"type": "text", "text": prompt},
+            {"type": "video", "uri": uploaded.uri, "mime_type": uploaded.mime_type},
+        ],
+        response_format={
+            "type": "text",
+            "mime_type": "application/json",
+            "schema": Critique.model_json_schema(),
+        },
+        generation_config={"thinking_level": "high"},
+        background=True,
+    )
+    interaction = _await_interaction(client, interaction, _CRITIC_TIMEOUT_SECONDS)
+    return Critique.model_validate(_parse_json_output(interaction))
+
+
+def _fix_explainer(
+    client: genai.Client,
+    current_html: str,
+    critique: Critique,
+    claims: list[Claim],
+    judge_result: JudgeResult,
+) -> str:
+    data = _build_explainer_data(claims, judge_result)
+    prompt = FIXER_PROMPT_TEMPLATE.format(
+        issues_json=json.dumps([i.model_dump() for i in critique.issues], indent=2),
+        data_json=json.dumps(data, indent=2),
+        current_html=current_html,
+    )
+    interaction = client.interactions.create(
+        model=FIXER_MODEL,
+        input=prompt,
+        generation_config={"thinking_level": "medium"},
+        background=True,
+    )
+    interaction = _await_interaction(client, interaction, _FIXER_TIMEOUT_SECONDS)
+    return _strip_code_fence(interaction.output_text, "html")
+
+
+def _run_render_critique_fix(
+    client: genai.Client,
+    explainer_dir: Path,
+    claims: list[Claim],
+    judge_result: JudgeResult,
+    initial_html: str,
+) -> Iterator[dict]:
+    """Render, critique, and fix an explainer for up to _MAX_RENDER_CRITIQUE_ROUNDS rounds.
+
+    Writes each version to explainer_dir/v{n}.html and yields progress events, ending with a
+    'loop_done' event carrying every version's filename, approval, checks, and issues.
+    """
+    explainer_dir.mkdir(parents=True, exist_ok=True)
+    html = initial_html
+    versions: list[dict] = []
+    version = 1
+
+    while True:
+        filename = f"v{version}.html"
+        (explainer_dir / filename).write_text(html, encoding="utf-8")
+
+        yield {"stage": "rendering", "version": version}
+        with tempfile.TemporaryDirectory() as video_dir:
+            video_path = _render_explainer_video(str(explainer_dir / filename), video_dir)
+
+            yield {"stage": "critiquing", "version": version}
+            critique = _critique_explainer(client, video_path, claims, judge_result)
+
+        checks = [c.model_dump() for c in critique.checks]
+        issues = [i.model_dump() for i in critique.issues]
+        version_summary = {
+            "version": version,
+            "filename": filename,
+            "approved": critique.approved,
+            "checks": checks,
+            "issues": issues,
+        }
+        versions.append(version_summary)
+        yield {"stage": "critique_result", **version_summary}
+
+        if critique.approved or version >= _MAX_RENDER_CRITIQUE_ROUNDS:
+            break
+
+        yield {"stage": "fixing", "from_version": version, "to_version": version + 1}
+        html = _fix_explainer(client, html, critique, claims, judge_result)
+        version += 1
+
+    yield {"stage": "loop_done", "versions": versions}
+
+
+def run_pipeline(
+    youtube_url: str | None = None,
+    file_path: str | None = None,
+    explainer_dir: Path | None = None,
+) -> Iterator[dict]:
     client = _client()
 
     yield {"stage": "extracting"}
@@ -367,6 +558,7 @@ def run_pipeline(youtube_url: str | None = None, file_path: str | None = None) -
                 },
                 "verdicts": [],
                 "what_actually_happened": "No checkable factual claims were found in this video.",
+                "versions": [],
             },
         }
         return
@@ -391,4 +583,12 @@ def run_pipeline(youtube_url: str | None = None, file_path: str | None = None) -
     yield {"stage": "generating_explainer"}
     explainer_html = _generate_explainer_html(client, claims, judge_result)
 
-    yield {"stage": "done", "result": {**judge_result.model_dump(), "explainer_html": explainer_html}}
+    versions: list[dict] = []
+    if explainer_dir is not None:
+        for event in _run_render_critique_fix(client, explainer_dir, claims, judge_result, explainer_html):
+            if event["stage"] == "loop_done":
+                versions = event["versions"]
+            else:
+                yield event
+
+    yield {"stage": "done", "result": {**judge_result.model_dump(), "versions": versions}}
