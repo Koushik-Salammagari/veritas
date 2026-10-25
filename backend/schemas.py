@@ -129,7 +129,7 @@ class Critique(BaseModel):
     approved: bool = Field(description="True only if every check passed and issues is empty")
 
 
-SourceVerificationStatus = Literal["verified", "broken", "unsupported"]
+SourceVerificationStatus = Literal["verified", "broken", "blocked", "unsupported", "not_checked"]
 
 
 class SourceVerification(BaseModel):
@@ -137,8 +137,11 @@ class SourceVerification(BaseModel):
     url: str
     title: str
     status: SourceVerificationStatus = Field(
-        description="'verified': loads and supports the claim. 'broken': doesn't load. "
-        "'unsupported': loads but content doesn't support the claim."
+        description="'verified': loads (2xx) and supports the claim. 'broken': genuinely gone — 404, DNS "
+        "failure, connection refused/timeout. 'blocked': reachable but access was refused — 401/403/406/429, "
+        "a paywall, login wall, CAPTCHA, or bot-detection page; the page likely works in a real browser. "
+        "'unsupported': loads fine but content doesn't support the claim. 'not_checked': the agent did not "
+        "report a result for this source."
     )
     notes: str = Field(description="One brief sentence explaining the status")
 
