@@ -14,6 +14,7 @@ const videoVerdictBannerInner = videoVerdictBanner.querySelector(".verdict-banne
 const videoVerdictLabel = document.getElementById("video-verdict-label");
 const videoVerdictExplanation = document.getElementById("video-verdict-explanation");
 const videoVerdictTechniques = document.getElementById("video-verdict-techniques");
+const pipelineStripSection = document.getElementById("pipeline-strip");
 const explainerSection = document.getElementById("explainer-section");
 const explainerVersionsContainer = document.getElementById("explainer-versions");
 const agentSection = document.getElementById("agent-section");
@@ -38,6 +39,10 @@ const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)
 let activeTab = "youtube";
 let currentClaims = [];
 let currentVerdicts = [];
+let currentVersions = [];
+let currentVideoVerdict = null;
+let investigatorSourceCount = 0;
+let pipelineAgentSummary = "—";
 let isReplaying = false;
 let investigatedCount = 0;
 let totalToInvestigate = 0;
@@ -276,6 +281,10 @@ function setStatus(message, isError = false) {
 function resetResults() {
   currentClaims = [];
   currentVerdicts = [];
+  currentVersions = [];
+  currentVideoVerdict = null;
+  investigatorSourceCount = 0;
+  pipelineAgentSummary = "—";
   investigatedCount = 0;
   totalToInvestigate = 0;
   claimsBody.innerHTML = "";
@@ -285,6 +294,7 @@ function resetResults() {
   summarySection.hidden = true;
   verdictsSection.hidden = true;
   videoVerdictBanner.hidden = true;
+  pipelineStripSection.hidden = true;
   explainerSection.hidden = true;
   explainerVersionsContainer.innerHTML = "";
   agentSection.hidden = true;
@@ -364,6 +374,7 @@ function renderClaimsTable(claims) {
 }
 
 function renderVideoVerdict(videoVerdict) {
+  currentVideoVerdict = videoVerdict;
   if (!videoVerdict) {
     videoVerdictBanner.hidden = true;
     return;
@@ -375,6 +386,63 @@ function renderVideoVerdict(videoVerdict) {
     .map((t) => `<span class="technique-badge">${t}</span>`)
     .join("");
   videoVerdictBanner.hidden = false;
+}
+
+// --- "How Veritas reached this verdict" strip: five big connected stage cards on the Report ---
+// --- screen, each summarizing what that stage actually did in this run, from real run data. ---
+document.querySelectorAll("#pipeline-strip .pipeline-stage-icon").forEach((el) => {
+  el.innerHTML = roleIconSvg(el.dataset.roleIcon);
+});
+
+document.querySelectorAll(".pipeline-stage").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const target = document.getElementById(btn.dataset.target);
+    if (target) target.scrollIntoView({ behavior: prefersReducedMotion ? "auto" : "smooth", block: "start" });
+  });
+});
+
+function formatCriticSummary(versions) {
+  if (!versions || versions.length === 0) return "—";
+  if (versions.length === 1) {
+    const v = versions[0];
+    return v.approved ? "v1 approved on first try" : `v1: ${v.issues.length} issue${v.issues.length === 1 ? "" : "s"} found`;
+  }
+  return versions
+    .map((v, i) =>
+      i === versions.length - 1
+        ? `v${v.version} ${v.approved ? "approved" : `${v.issues.length} issue${v.issues.length === 1 ? "" : "s"}`}`
+        : `v${v.version}: ${v.issues.length} issue${v.issues.length === 1 ? "" : "s"} found →`
+    )
+    .join(" ");
+}
+
+function updatePipelineStrip() {
+  const investigatorsEl = document.getElementById("pipeline-summary-investigators");
+  const judgeEl = document.getElementById("pipeline-summary-judge");
+  const explainerEl = document.getElementById("pipeline-summary-explainer");
+  const criticEl = document.getElementById("pipeline-summary-critic");
+  const agentEl = document.getElementById("pipeline-summary-agent");
+  if (!investigatorsEl) return;
+
+  investigatorsEl.textContent = currentClaims.length
+    ? `${currentClaims.length} claim${currentClaims.length === 1 ? "" : "s"} investigated · ${investigatorSourceCount} source${investigatorSourceCount === 1 ? "" : "s"} found`
+    : "—";
+  judgeEl.textContent = currentVideoVerdict
+    ? `Verdict: ${currentVideoVerdict.verdict.toUpperCase()} · ${currentVerdicts.length} claim${currentVerdicts.length === 1 ? "" : "s"} judged`
+    : "—";
+  explainerEl.textContent = currentVersions.length
+    ? `${currentVersions.length} version${currentVersions.length === 1 ? "" : "s"} written`
+    : "—";
+  criticEl.textContent = formatCriticSummary(currentVersions);
+  agentEl.textContent = pipelineAgentSummary;
+
+  pipelineStripSection.hidden = false;
+}
+
+function formatAgentSummary(result) {
+  const verifications = result.source_verifications || [];
+  const verified = verifications.filter((v) => v.status === "verified").length;
+  return `${verifications.length} source${verifications.length === 1 ? "" : "s"} checked (${verified} verified) · ${result.video_url ? "MP4 ready" : "MP4 unavailable"}`;
 }
 
 function setAllStatusCells(label, cssClass) {
@@ -442,6 +510,8 @@ function startAgentTask(runId, filename) {
   const totalSources = currentVerdicts.reduce((sum, v) => sum + (v.sources ? v.sources.length : 0), 0);
   createTraceCard("agent", "Managed Agent", "Managed Agent", "model-agent", "agent");
   setTraceStatus("agent", "running", `Rendering MP4 and verifying ${totalSources} source(s) in sandbox...`);
+  pipelineAgentSummary = "Working in sandbox…";
+  updatePipelineStrip();
 
   fetch("/api/agent-tasks", {
     method: "POST",
@@ -458,6 +528,8 @@ function startAgentTask(runId, filename) {
       agentStatusEl.classList.add("agent-error");
       setTraceStatus("agent", "failed", truncate(String(err.message || err), 60));
       traceAgentSettled = true;
+      pipelineAgentSummary = "Could not start";
+      updatePipelineStrip();
       checkTraceSettled();
     });
 }
@@ -480,6 +552,8 @@ function pollAgentTask(taskId) {
         agentStatusEl.classList.add("agent-error");
         setTraceStatus("agent", "failed", truncate(task.error || "unknown error", 60));
         traceAgentSettled = true;
+        pipelineAgentSummary = "Failed — see section below";
+        updatePipelineStrip();
         checkTraceSettled();
       }
     })
@@ -488,6 +562,8 @@ function pollAgentTask(taskId) {
       agentStatusEl.classList.add("agent-error");
       setTraceStatus("agent", "failed", "Lost track of agent task");
       traceAgentSettled = true;
+      pipelineAgentSummary = "Lost track of agent task";
+      updatePipelineStrip();
       checkTraceSettled();
     });
 }
@@ -543,6 +619,8 @@ function renderAgentResult(result) {
     .map((status) => `${counts[status]} ${status}`);
   const doneLog = `${result.video_url ? "Rendered MP4" : "No video"} · ${summaryParts.join(", ") || "no sources"}`;
   setTraceStatus("agent", "done", doneLog);
+  pipelineAgentSummary = formatAgentSummary(result);
+  updatePipelineStrip();
 }
 
 const SOURCE_FLAG_LABELS = {
@@ -601,6 +679,7 @@ function handleEvent(evt) {
       setStatusCell(evt.claim_index, "investigated", "status-done");
       setStatus(`Investigated ${investigatedCount}/${totalToInvestigate} claim(s)...`);
       const sources = (evt.finding && evt.finding.sources) || [];
+      investigatorSourceCount += sources.length;
       let log;
       if (sources.length === 0) {
         log = "No reliable sources found";
@@ -695,15 +774,17 @@ function handleEvent(evt) {
       summarySection.hidden = !evt.result.what_actually_happened;
       renderVerdicts(evt.result.verdicts || []);
       renderExplainerVersions(evt.result.versions);
+      currentVersions = evt.result.versions || [];
       if (!isReplaying) setStatus("Analysis complete.");
 
       reportReady = true;
       showScreen("report");
 
       tracePipelineDone = true;
+      const lastVersion = currentVersions[currentVersions.length - 1];
+      pipelineAgentSummary = lastVersion && lastVersion.approved ? "Starting shareable video & source check…" : "—";
+      updatePipelineStrip();
       if (!isReplaying) {
-        const versions = evt.result.versions || [];
-        const lastVersion = versions[versions.length - 1];
         if (lastVersion && lastVersion.approved && evt.result.run_id) {
           startAgentTask(evt.result.run_id, lastVersion.filename);
         } else {
@@ -720,6 +801,8 @@ function handleEvent(evt) {
       traceAgentStarted = true;
       createTraceCard("agent", "Managed Agent", "Managed Agent", "model-agent", "agent");
       setTraceStatus("agent", "running", `Rendering MP4 and verifying ${evt.total_sources} source(s) in sandbox...`);
+      pipelineAgentSummary = "Working in sandbox…";
+      updatePipelineStrip();
       break;
 
     case "agent_done":
@@ -733,6 +816,8 @@ function handleEvent(evt) {
       agentStatusEl.classList.add("agent-error");
       setTraceStatus("agent", "failed", truncate(evt.error || "unknown error", 60));
       traceAgentSettled = true;
+      pipelineAgentSummary = "Failed — see section below";
+      updatePipelineStrip();
       if (!isReplaying) checkTraceSettled();
       break;
 

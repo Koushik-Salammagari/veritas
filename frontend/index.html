@@ -107,6 +107,46 @@
         </div>
       </section>
 
+      <section id="pipeline-strip" hidden>
+        <p class="eyebrow">How Veritas Reached This Verdict</p>
+        <div class="pipeline-strip-track">
+          <button type="button" class="pipeline-stage" data-target="verdicts-section">
+            <span class="pipeline-stage-icon role-investigator" data-role-icon="investigator"></span>
+            <span class="pipeline-stage-title">Investigators</span>
+            <span class="pipeline-stage-model">gemini-3.8-flash</span>
+            <span class="pipeline-stage-summary" id="pipeline-summary-investigators">—</span>
+          </button>
+          <span class="pipeline-connector" aria-hidden="true"></span>
+          <button type="button" class="pipeline-stage" data-target="video-verdict-banner">
+            <span class="pipeline-stage-icon role-judge" data-role-icon="judge"></span>
+            <span class="pipeline-stage-title">Judge</span>
+            <span class="pipeline-stage-model">gemini-4-argon</span>
+            <span class="pipeline-stage-summary" id="pipeline-summary-judge">—</span>
+          </button>
+          <span class="pipeline-connector" aria-hidden="true"></span>
+          <button type="button" class="pipeline-stage" data-target="explainer-section">
+            <span class="pipeline-stage-icon role-explainer" data-role-icon="explainer"></span>
+            <span class="pipeline-stage-title">Explainer</span>
+            <span class="pipeline-stage-model">gemini-4-argon</span>
+            <span class="pipeline-stage-summary" id="pipeline-summary-explainer">—</span>
+          </button>
+          <span class="pipeline-connector" aria-hidden="true"></span>
+          <button type="button" class="pipeline-stage" data-target="explainer-section">
+            <span class="pipeline-stage-icon role-critic" data-role-icon="critic"></span>
+            <span class="pipeline-stage-title">Critic</span>
+            <span class="pipeline-stage-model">gemini-4-argon</span>
+            <span class="pipeline-stage-summary" id="pipeline-summary-critic">—</span>
+          </button>
+          <span class="pipeline-connector" aria-hidden="true"></span>
+          <button type="button" class="pipeline-stage" data-target="agent-section">
+            <span class="pipeline-stage-icon role-agent" data-role-icon="agent"></span>
+            <span class="pipeline-stage-title">Managed Agent</span>
+            <span class="pipeline-stage-model">antigravity</span>
+            <span class="pipeline-stage-summary" id="pipeline-summary-agent">—</span>
+          </button>
+        </div>
+      </section>
+
       <section id="summary-section" hidden>
         <h2>What actually happened</h2>
         <p id="summary-text" class="summary-text"></p>
