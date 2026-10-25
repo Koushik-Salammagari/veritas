@@ -26,7 +26,7 @@
         <div class="tab-panel" data-panel="upload" hidden>
           <input type="file" id="video-file" name="video" accept="video/*" />
         </div>
-        <button type="submit" id="submit-btn">Extract claims</button>
+        <button type="submit" id="submit-btn">Investigate</button>
       </form>
 
       <p id="status" class="status" hidden></p>
@@ -42,10 +42,21 @@
             <th>Speaker</th>
             <th>Claim</th>
             <th>Type</th>
+            <th>Status</th>
           </tr>
         </thead>
         <tbody></tbody>
       </table>
+    </section>
+
+    <section id="summary-section" hidden>
+      <h2>What actually happened</h2>
+      <p id="summary-text" class="summary-text"></p>
+    </section>
+
+    <section id="verdicts-section" hidden>
+      <h2>Verdicts</h2>
+      <div id="verdicts"></div>
     </section>
   </main>
 

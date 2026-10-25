@@ -5,8 +5,15 @@ const statusEl = document.getElementById("status");
 const submitBtn = document.getElementById("submit-btn");
 const resultsSection = document.getElementById("results");
 const claimsBody = document.querySelector("#claims-table tbody");
+const summarySection = document.getElementById("summary-section");
+const summaryText = document.getElementById("summary-text");
+const verdictsSection = document.getElementById("verdicts-section");
+const verdictsContainer = document.getElementById("verdicts");
 
 let activeTab = "youtube";
+let currentClaims = [];
+let investigatedCount = 0;
+let totalToInvestigate = 0;
 
 tabButtons.forEach((btn) => {
   btn.addEventListener("click", () => {
@@ -22,20 +29,154 @@ function setStatus(message, isError = false) {
   statusEl.classList.toggle("error", isError);
 }
 
-function renderClaims(claims) {
+function resetResults() {
+  currentClaims = [];
+  investigatedCount = 0;
+  totalToInvestigate = 0;
+  claimsBody.innerHTML = "";
+  verdictsContainer.innerHTML = "";
+  summaryText.textContent = "";
+  resultsSection.hidden = true;
+  summarySection.hidden = true;
+  verdictsSection.hidden = true;
+}
+
+function renderClaimsTable(claims) {
+  currentClaims = claims;
   claimsBody.innerHTML = "";
   claims.forEach((claim, i) => {
     const row = document.createElement("tr");
+    row.id = `claim-row-${i}`;
     row.innerHTML = `
       <td>${i + 1}</td>
       <td>${claim.timestamp}</td>
       <td>${claim.speaker}</td>
       <td>${claim.exact_wording}</td>
       <td><span class="badge badge-${claim.claim_type}">${claim.claim_type}</span></td>
+      <td class="status-cell" id="status-cell-${i}">pending</td>
     `;
     claimsBody.appendChild(row);
   });
   resultsSection.hidden = claims.length === 0;
+}
+
+function setAllStatusCells(label, cssClass) {
+  currentClaims.forEach((_, i) => setStatusCell(i, label, cssClass));
+}
+
+function setStatusCell(index, label, cssClass) {
+  const cell = document.getElementById(`status-cell-${index}`);
+  if (!cell) return;
+  cell.className = `status-cell ${cssClass || ""}`.trim();
+  cell.innerHTML = cssClass === "status-investigating" ? `<span class="spinner"></span>${label}` : label;
+}
+
+function sourcesHtml(sources) {
+  if (!sources || sources.length === 0) {
+    return '<span class="no-sources">No sources</span>';
+  }
+  return sources
+    .map((s) => `<a href="${s.url}" target="_blank" rel="noopener noreferrer">${s.title || s.url}</a>`)
+    .join("");
+}
+
+function renderVerdicts(verdicts) {
+  verdictsContainer.innerHTML = "";
+  verdicts
+    .sort((a, b) => a.claim_index - b.claim_index)
+    .forEach((v) => {
+      const claim = currentClaims[v.claim_index];
+      const card = document.createElement("div");
+      card.className = `verdict-card verdict-${v.verdict}`;
+      const techniqueBadge = v.misleading_technique
+        ? `<span class="technique-badge">${v.misleading_technique}</span>`
+        : "";
+      card.innerHTML = `
+        <div class="verdict-card-header">
+          <span class="claim-number">#${v.claim_index + 1}</span>
+          <span class="verdict-badge verdict-badge-${v.verdict}">${v.verdict}</span>
+          <span class="confidence">${Math.round(v.confidence * 100)}% confidence</span>
+          ${techniqueBadge}
+        </div>
+        <p class="claim-text">"${claim ? claim.exact_wording : ""}"</p>
+        <p class="explanation">${v.explanation}</p>
+        <div class="sources"><span class="sources-label">Sources:</span>${sourcesHtml(v.sources)}</div>
+      `;
+      verdictsContainer.appendChild(card);
+      setStatusCell(v.claim_index, "judged", "status-done");
+    });
+  verdictsSection.hidden = verdicts.length === 0;
+}
+
+function handleEvent(evt) {
+  switch (evt.stage) {
+    case "extracting":
+      setStatus("Gemini 4 Argon is watching the video and extracting claims. This can take a minute or two...");
+      break;
+
+    case "claims_extracted":
+      renderClaimsTable(evt.claims);
+      setStatus(`Found ${evt.claims.length} claim(s). Starting investigation...`);
+      break;
+
+    case "investigating_start":
+      totalToInvestigate = evt.total;
+      investigatedCount = 0;
+      setAllStatusCells("investigating...", "status-investigating");
+      setStatus(`Investigating ${evt.total} claim(s) in parallel with Gemini 3.8 Flash + Google Search...`);
+      break;
+
+    case "investigated":
+      investigatedCount += 1;
+      setStatusCell(evt.claim_index, "investigated", "status-done");
+      setStatus(`Investigated ${investigatedCount}/${totalToInvestigate} claim(s)...`);
+      break;
+
+    case "judging":
+      setStatus("Gemini 4 Argon is weighing the evidence and judging each claim...");
+      break;
+
+    case "done":
+      summaryText.textContent = evt.result.what_actually_happened;
+      summarySection.hidden = !evt.result.what_actually_happened;
+      renderVerdicts(evt.result.verdicts || []);
+      setStatus("Analysis complete.");
+      break;
+
+    case "error":
+      setStatus(evt.message || "Something went wrong.", true);
+      break;
+
+    default:
+      break;
+  }
+}
+
+async function streamAnalysis(formData) {
+  const response = await fetch("/api/analyze", { method: "POST", body: formData });
+
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.detail || `Request failed (${response.status})`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    let newlineIndex;
+    while ((newlineIndex = buffer.indexOf("\n")) >= 0) {
+      const line = buffer.slice(0, newlineIndex).trim();
+      buffer = buffer.slice(newlineIndex + 1);
+      if (!line) continue;
+      handleEvent(JSON.parse(line));
+    }
+  }
 }
 
 form.addEventListener("submit", async (event) => {
@@ -59,23 +200,11 @@ form.addEventListener("submit", async (event) => {
   }
 
   submitBtn.disabled = true;
-  resultsSection.hidden = true;
-  setStatus("Gemini 4 Argon is watching the video and extracting claims. This can take a minute or two...");
+  resetResults();
+  setStatus("Starting...");
 
   try {
-    const response = await fetch("/api/extract-claims", {
-      method: "POST",
-      body: formData,
-    });
-
-    if (!response.ok) {
-      const body = await response.json().catch(() => ({}));
-      throw new Error(body.detail || `Request failed (${response.status})`);
-    }
-
-    const data = await response.json();
-    setStatus(`Found ${data.claims.length} claim(s).`);
-    renderClaims(data.claims);
+    await streamAnalysis(formData);
   } catch (err) {
     setStatus(err.message || "Something went wrong.", true);
   } finally {
