@@ -161,12 +161,16 @@ function renderVerdicts(verdicts) {
       const techniqueBadge = v.misleading_technique
         ? `<span class="technique-badge">${v.misleading_technique}</span>`
         : "";
+      const attributionBadge = v.attribution
+        ? `<span class="attribution-badge attribution-${v.attribution}">attribution: ${v.attribution}</span>`
+        : "";
       card.innerHTML = `
         <div class="verdict-card-header">
           <span class="claim-number">#${v.claim_index + 1}</span>
           <span class="verdict-badge verdict-badge-${v.verdict}">${v.verdict}</span>
           <span class="confidence">${Math.round(v.confidence * 100)}% confidence</span>
           ${techniqueBadge}
+          ${attributionBadge}
         </div>
         <p class="claim-text">"${claim ? claim.exact_wording : ""}"</p>
         <p class="explanation">${v.explanation}</p>

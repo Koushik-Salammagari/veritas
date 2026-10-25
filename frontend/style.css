@@ -276,6 +276,25 @@ tr:last-child td {
   font-size: 0.76rem;
 }
 
+.attribution-badge {
+  border-radius: 999px;
+  padding: 2px 9px;
+  font-size: 0.76rem;
+  border: 1px solid transparent;
+}
+
+.attribution-badge.attribution-accurate {
+  background: rgba(79, 209, 126, 0.12);
+  color: var(--true);
+  border-color: rgba(79, 209, 126, 0.4);
+}
+
+.attribution-badge.attribution-inaccurate {
+  background: rgba(255, 92, 92, 0.12);
+  color: var(--false);
+  border-color: rgba(255, 92, 92, 0.4);
+}
+
 .claim-text {
   margin: 0 0 8px;
   font-style: italic;
