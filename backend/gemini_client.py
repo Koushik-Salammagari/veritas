@@ -71,15 +71,40 @@ extracted from a video, each paired with an investigator's research findings (a 
 found via Google Search), plus any signs of editing noticed while extracting claims. Decide a verdict \
 for each claim and one overall verdict for the video, using ONLY the evidence given below.
 
+Judge the substance, not the quote. Many claims report what someone said, claimed, charged, or alleged \
+(e.g. "the senator claimed X", "he said X", "Coleman charged that X", "the report says X"). For these, \
+verdict and attribution are two SEPARATE questions — never let one influence the other:
+1. verdict = is X (the underlying assertion) actually true? Judge this ONLY against the investigator's \
+findings, as if X had been stated directly with no attribution at all.
+2. attribution = did the speaker actually say/claim/charge X? "accurate" if yes (the quote/attribution \
+checks out), "inaccurate" if the video misquotes, fabricates, or misattributes it. Set attribution to \
+null only for claims that are NOT reporting someone else's speech (e.g. a narrator or on-screen text \
+directly asserting a fact in its own voice).
+
+Worked example: the claim "Coleman charged that the 97% consensus figure was manipulated" — if the \
+investigator's findings show Coleman really did say this (he did) AND show the 97% figure was NOT \
+manipulated (it wasn't), then verdict = "false" (the assertion that the figure was manipulated is false) \
+and attribution = "accurate" (he really did charge this). The verdict must NOT become "misleading" or \
+"true" just because the speaker genuinely said it, and it must NOT become "unverifiable" just because the \
+claim is attributed to someone — attribution accuracy and substance truth are independent.
+
 Per-claim rules:
-- verdict must be one of: true, misleading, false, unverifiable.
+- verdict must be one of: true, misleading, false, unverifiable. It is a judgment of the SUBSTANCE only.
+- Use "false" whenever the substance is factually wrong — including a reported claim/charge/allegation \
+whose content is wrong. Do not downgrade a false substance to "misleading" just because it was quoted \
+accurately, repeated from an old broadcast, or left uncorrected; those are separate facts (captured by \
+attribution and by the video-level techniques), not reasons to soften the per-claim verdict.
+- Use "misleading" only when the substance itself is technically true/defensible but presented in a way \
+that creates a false impression (a true number quoted out of context, a cherry-picked timeframe, a \
+decontextualized clip) — not merely because a false claim went unchallenged.
 - NEVER mark a claim "false" or "misleading" unless the investigator's findings include at least one \
 source URL that supports your reasoning. If the evidence is weak, missing, or sources are empty, use \
 "unverifiable" instead.
 - confidence is a number from 0 to 1 reflecting how certain you are given the evidence.
 - misleading_technique applies only when verdict is "misleading": one of "out of context", \
 "old footage", "cherry-picked number", "missing context", "fabricated". Leave it null otherwise.
-- explanation is exactly one sentence.
+- explanation is exactly one sentence, about the substance (mention attribution only if it adds \
+necessary nuance).
 - sources: the source URLs (with titles) from the investigator's findings that support your verdict. \
 Must be non-empty for every "false" or "misleading" verdict.
 - claim_index must match the index given for each claim below.
@@ -90,6 +115,13 @@ weigh this when judging the claim and, more importantly, when judging the video 
 Video-level verdict (video_verdict):
 - verdict is one of: accurate, misleading, false. Base it on the pattern across all claims and the \
 editing signals below, not on any single claim in isolation.
+- Use "false" when the video's central message or main claim is itself factually false — check which \
+claim(s) carry the video's main point and look at their per-claim verdicts above; if those are "false", \
+the video verdict is "false" too. Don't soften this to "misleading" just because the video also uses \
+editing tricks; if the core thing it wants you to believe is false, the verdict is false.
+- Use "misleading" when the video's individual claims are true (or the central message itself holds up) \
+but the overall impression is deceptive through editing, missing context, or selective framing.
+- Use "accurate" when there's no deception and the central message is true.
 - techniques: zero or more of "repeated or spliced segments", "old footage presented as new", \
 "missing context", "misleading title or caption", "cherry-picked clips" — list only techniques actually \
 supported by the claims, findings, or editing signals below. Leave empty if verdict is "accurate".
@@ -126,7 +158,9 @@ consistently throughout.
 The animation sequence should show, in this order:
 1. The video's overall verdict as a bold title card, with the misleading techniques used, if any.
 2. Each key claim with its individual verdict badge and a one-line reason (cap this at the 5 most \
-important claims if there are more).
+important claims if there are more). The verdict badge is about the substance of the claim, not whether \
+someone said it; if a claim has a non-null attribution, show a small separate "attribution: accurate" or \
+"attribution: inaccurate" tag next to it.
 3. If the video is misleading or false, a card explaining how it misleads, using the techniques and \
 explanations given.
 4. A "What actually happened" card with the true story in plain language.
@@ -141,8 +175,9 @@ data below. Be strict: this explainer will be shown to the public, so anything i
 unreadable, or incomplete must be caught.
 
 Run exactly these checks and report pass/fail with a short note for each:
-- claims_and_verdicts_match: every number, confidence, and verdict shown in the video matches the \
-ground-truth data exactly (no rounding errors, no changed verdicts, no invented statistics).
+- claims_and_verdicts_match: every number, confidence, verdict, and attribution tag (when present) shown \
+in the video matches the ground-truth data exactly (no rounding errors, no changed verdicts, no invented \
+statistics).
 - no_missing_or_misrepresented_claims: every claim listed in the ground-truth data appears in the video \
 (or, if claims were capped, the video doesn't claim to show all of them) and none are paraphrased in a \
 way that changes their meaning.
@@ -369,6 +404,7 @@ def _build_explainer_data(claims: list[Claim], judge_result: JudgeResult) -> dic
                 "verdict": verdict.verdict,
                 "confidence": verdict.confidence,
                 "misleading_technique": verdict.misleading_technique,
+                "attribution": verdict.attribution,
                 "explanation": verdict.explanation,
                 "sources": [s.model_dump() for s in verdict.sources],
             }
