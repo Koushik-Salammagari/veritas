@@ -52,14 +52,24 @@ VerdictLabel = Literal["true", "misleading", "false", "unverifiable"]
 MisleadingTechnique = Literal[
     "out of context", "old footage", "cherry-picked number", "missing context", "fabricated"
 ]
+AttributionLabel = Literal["accurate", "inaccurate"]
 
 
 class Verdict(BaseModel):
     claim_index: int = Field(description="Index of the claim this verdict is for, matching the input order")
-    verdict: VerdictLabel
+    verdict: VerdictLabel = Field(
+        description="Verdict on the SUBSTANCE of the claim (whether the underlying assertion is true), "
+        "not on whether an attributed speaker actually said it"
+    )
     confidence: float = Field(ge=0, le=1, description="Confidence in this verdict, from 0 to 1")
     misleading_technique: MisleadingTechnique | None = Field(
         default=None, description="Set only when verdict is 'misleading', otherwise null"
+    )
+    attribution: AttributionLabel | None = Field(
+        default=None,
+        description="For claims that report what someone said/claimed/wrote: whether that attribution "
+        "itself is accurate (they really said it) or inaccurate (misquoted, fabricated, misattributed). "
+        "Null for claims that are not reporting someone else's speech.",
     )
     explanation: str = Field(description="Exactly one sentence explaining the verdict")
     sources: list[Source] = Field(description="Sources supporting this verdict; required for 'false' or 'misleading'")
