@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Veritas</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header>
+    <h1>Veritas</h1>
+    <p class="tagline">Gemini gives you an opinion. Veritas runs an investigation, then shows you the truth.</p>
+  </header>
+
+  <main>
+    <section class="input-card">
+      <div class="tabs">
+        <button class="tab-btn active" data-tab="youtube">YouTube link</button>
+        <button class="tab-btn" data-tab="upload">Upload video</button>
+      </div>
+
+      <form id="claim-form">
+        <div class="tab-panel" data-panel="youtube">
+          <input type="url" id="youtube-url" name="youtube_url" placeholder="https://www.youtube.com/watch?v=..." />
+        </div>
+        <div class="tab-panel" data-panel="upload" hidden>
+          <input type="file" id="video-file" name="video" accept="video/*" />
+        </div>
+        <button type="submit" id="submit-btn">Extract claims</button>
+      </form>
+
+      <p id="status" class="status" hidden></p>
+    </section>
+
+    <section id="results" hidden>
+      <h2>Claims found</h2>
+      <table id="claims-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Timestamp</th>
+            <th>Speaker</th>
+            <th>Claim</th>
+            <th>Type</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
