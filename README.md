@@ -2,116 +2,74 @@
 
 **Gemini gives you an opinion. Veritas runs an investigation, then shows you the truth.**
 
-Built at the Gemini 4 Argon SF Hackathon, October 25, 2026.
-Problem statement: **Two, More Dimensions** (long video understanding plus a render, watch, critique, fix loop).
-
-> Note: everything in this repository was written during the event. This README holds the plan and notes prepared beforehand, as allowed by the organizers.
-
----
+Built in a single day at the Gemini hackathon, October 25, 2026 — everything in this repository, every prompt, every line of the pipeline and every pixel of the UI, was written during the event.
 
 ## The problem
 
-I see a lot of misinformation in posts and videos, and I often can't figure out what's actually true. Most people don't have the time or tools to check what they watch, so convincing but misleading videos shape what millions of people believe.
+Misleading and out-of-context videos shape what millions of people believe, and most viewers have neither the time nor the tools to check what they're watching. A video can quote someone accurately and still be a lie, by splicing in old footage, cutting context, or burying a false claim inside a technically-true sentence. Spotting that takes real investigative work — exactly the kind of multi-step, evidence-grounded task a frontier model with search and video understanding is suited for.
 
 ## What Veritas does
 
-1. You give it a video (YouTube link or upload).
-2. Gemini 4 Argon watches it and pulls out every factual claim, with speaker and timestamp.
-3. An investigator agent checks each claim against trusted sources.
-4. A judge turns the evidence into claim-by-claim verdicts: **true, misleading, false or unverifiable**, with how it misleads and what actually happened.
-5. Veritas **generates a short visual explainer** of the truth.
-6. Veritas **renders the explainer, watches it, critiques it against the evidence and fixes it**, in a loop, until it is accurate, fair and clear.
+1. You give it a video — a YouTube link or an upload.
+2. Gemini watches the whole thing and pulls out every checkable factual claim, with speaker and timestamp.
+3. A pool of investigator agents researches each claim in parallel using Google Search grounding.
+4. A judge turns the evidence into a verdict per claim — **true, misleading, false, or unverifiable** — plus an overall video verdict, the misleading techniques used, and a plain-language account of what actually happened.
+5. Gemini writes a short, natural-language **narration script** for a shareable explainer and a text-to-speech model voices it.
+6. Veritas **renders the explainer, watches it, critiques it against the evidence, and fixes it** — in a loop — until a strict critic approves it.
+7. A managed agent, running in its own sandboxed environment, renders a shareable MP4 of the approved explainer and independently re-verifies every cited source.
+
+The whole run streams live to the browser — a pipeline trace shows each investigator, the judge, the explainer writer, the critic, and the managed agent working in real time — and every run is saved so it can be replayed later at its original pace or sped up.
 
 ## Why this fits Problem Statement Two
 
-- **Long video understanding:** Argon watches the full video, including speech, on-screen text and visuals.
-- **Render, watch, critique, fix:** the explainer is generated, rendered, watched by Argon, checked against the goal and evidence, and improved over several rounds.
-
-## Argon capabilities used
-
-| Capability | Where |
-|---|---|
-| Long video understanding | Claim extraction; watching the rendered explainer |
-| Frontier reasoning | Judge and critique steps |
-| Search grounding | Investigator agent finding sources |
-| Long output | Generating the full explainer in one pass |
-| Managed Agents | Investigator runs as a managed agent in its own sandbox |
+- **Long video understanding:** the extractor watches the full video — speech, on-screen text, and visuals — not a transcript, to catch claims made on screen as well as claims made aloud, and to notice editing signals (cuts, repeated segments, mismatched captions) a transcript alone would miss.
+- **Render, watch, critique, fix:** the explainer isn't accepted on faith. It's rendered in a headless browser, the recording is handed back to Gemini as a strict critic that checks it against the ground-truth verdicts (accuracy, fairness, readability, narration-matches-evidence, pacing), and a fixer regenerates it against specific, cited issues — for up to two rounds, with every round and every critique visible in the UI.
 
 ## Architecture
 
-1. **Input:** YouTube link or video upload.
-2. **Claim extractor (Argon):** returns a structured list of claims with speaker, timestamp and claim type.
-3. **Investigator (Managed Agent, coverage):** for each claim, finds how trusted sources reported it, returns findings plus source links.
-4. **Judge (Argon):** verdict per claim, the misleading technique (cropped clip, old footage, cherry-picked number, missing context), and a plain-language "what actually happened."
-5. **Explainer generator (Argon):** produces a self-contained web page with a short animated explainer of the verdicts.
-6. **Render:** a headless browser records the explainer as a short video or set of screenshots.
-7. **Critic (Argon):** watches the render and scores it against a checklist: accurate to the evidence, fair, readable, every claim covered, sources shown. Lists concrete fixes.
-8. **Fixer (Argon):** applies the fixes and regenerates. Repeat steps 6 to 8 up to 3 rounds.
-9. **Frontend:** shows the agents working live, the verdicts, and each explainer version with what the critic caught.
+```
+video → claim extractor → investigators (parallel) → judge → narration + TTS
+                                                                     ↓
+                                              explainer writer → render → critic → fixer
+                                                                     ↓ (approved)
+                                                          managed agent: MP4 + source re-check
+```
 
-## Scope for today
+1. **Claim extractor** — watches the video once and returns a structured list of claims (speaker, timestamp, exact wording, claim type) plus any editing signals it notices.
+2. **Investigators** — one per claim, run in parallel, each researching with Google Search grounding and returning a summary and sources.
+3. **Judge** — reads every claim alongside its investigator's findings and decides a verdict, a confidence, the misleading technique (if any), and an overall video verdict — never marking a claim false or misleading without a source to back it, and never citing a URL that didn't actually come from that claim's search results.
+4. **Narration + TTS** — a fixed, code-determined slide plan (overall verdict, up to three claims that drive the verdict, how it misleads, what actually happened, sources) gets a natural, conversational voiceover per segment, synthesized to real audio; each slide's on-screen time is driven by its segment's measured speech length.
+5. **Explainer writer** — generates the slide content for a self-contained, auto-playing HTML explainer; a small deterministic harness (not the model) wires up slide timing, the audio, and the "play with narration" / mute controls, so LLM output only ever touches visual content, never playback logic.
+6. **Render → critic → fixer loop** — a headless browser records one playthrough, a strict critic checks it against the ground-truth verdicts and the narration script, and a fixer regenerates just the slide content against the critic's specific issues. Repeats up to two rounds.
+7. **Managed agent** — once a version is approved, a sandboxed agent independently renders the shareable MP4 and re-verifies every cited source by actually fetching it, classifying each as verified, broken, blocked, or not supporting the claim.
 
-**Must have (the core):** video in, claims, judge verdicts, explainer, at least one visible critique-and-fix round.
-**Nice to have:** investigator as a Managed Agent, live agent progress view, before/after explainer comparison.
-**Cut first if short on time:** the investigator agent (let the judge use search grounding directly).
-**Later, after the hackathon:** data agent that recomputes statistics, context agent that finds original footage, knowledge graph of claims and public figures, mobile share sheet.
+## Which model does what, and why
 
-Do not build: a Streamlit app, or a screen where a dashboard is the main feature (both are on the avoid list).
+| Model | Role | Why this model |
+|---|---|---|
+| **gemini-4-argon** | Claim extraction, judging, narration script, explainer writing, critique, fixing | The reasoning-and-long-context work: watching a full video, weighing evidence fairly, writing natural prose, and self-critiquing against a checklist all need a frontier model, not a fast one. |
+| **gemini-3.8-flash** | Investigators (one call per claim, with Google Search grounding) | Up to a dozen of these run in parallel per video; a fast, cheap model keeps the whole investigation phase quick without sacrificing search-grounded accuracy on a single, narrow claim. |
+| **gemini-3.8-flash-tts** | Narration audio | A dedicated text-to-speech model producing a warm, natural narrator voice ("Sulafat") — a reasoning model isn't the right tool for synthesizing audio. |
+| **antigravity managed agent** | Shareable MP4 rendering + independent source re-verification | This step needs a real sandboxed environment with code execution and live web access (installing Playwright and ffmpeg, fetching 20+ URLs with real HTTP requests) — a managed agent, not a single model call, is what that requires. |
 
-## Timeline
+## How to run it locally
 
-| Time | Goal |
-|---|---|
-| 10:30 to 11:30 | Project set up; Argon watches one video and lists claims |
-| 11:30 to 1:00 | Investigator plus judge produce verdicts |
-| 1:00 to 2:30 | Explainer generation |
-| 2:30 to 3:30 | Render, watch, critique, fix loop |
-| 3:30 to 4:30 | Frontend polish; test with all demo videos |
-| 4:30 to 5:00 | Record 1-minute demo video; submit; repo public |
+```bash
+git clone https://github.com/Koushik-Salammagari/veritas.git
+cd veritas
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/playwright install --with-deps chromium
 
-Rule: if a step runs 30 minutes over, cut scope and move on.
+echo "GEMINI_API_KEY=your-key-here" > .env
 
-## Claude Code prompts (use in order)
+.venv/bin/uvicorn backend.main:app --port 8000
+```
 
-Paste each one when starting that stage. Keep the API key in an environment variable; never paste it into a prompt.
+Open `http://localhost:8000`, paste a YouTube link (or upload a video), and watch the investigation run live. Past runs are saved under `explainers/` and listed on the start screen, where any of them can be reloaded instantly or replayed at real pace or 4x.
 
-1. **Setup:** "Create a new web app for Veritas. Use a simple stack you can scaffold fast (not Streamlit). Set up the Gemini API using the model gemini-4-argon, with the API key read from an environment variable. Make a page where I can paste a YouTube link or upload a video."
-2. **Claim extraction:** "Send the video to gemini-4-argon and ask it to return structured output: a list of factual claims, each with speaker, timestamp, exact wording, and claim type (statistic, event, quote, other). Ignore opinions. Show the list on the page."
-3. **Investigator:** "For each claim, run an investigation using Gemini with Google Search grounding (or a Managed Agent if available in the DeepMind resources). Return what trusted sources say and the source links. Run claims in parallel and show live status for each one."
-4. **Judge:** "Send all claims and findings to gemini-4-argon. For each claim return a verdict (true, misleading, false, unverifiable), confidence, the misleading technique if any, a one-sentence explanation, and sources. Also return a short paragraph on what actually happened. Never mark a claim false without a source; use unverifiable when evidence is weak."
-5. **Explainer:** "Have gemini-4-argon generate one self-contained HTML page that works as a 20 to 30 second animated explainer of the verdicts: the claim, the verdict, what actually happened, and sources. Save each version."
-6. **Render and critique loop:** "Render the explainer in a headless browser and record it as a video or screenshots. Send the recording plus the verdicts to gemini-4-argon as a critic: score accuracy against the evidence, fairness, readability, and coverage of every claim, and list specific fixes. Then have it regenerate the explainer with the fixes. Repeat up to 3 rounds or until the critic approves. Show every version and the critic's notes in the UI."
-7. **Polish:** "Make the results screen clear for a live demo: the video with claim markers, verdict cards, and the explainer versions side by side with what changed."
+## Next steps
 
-## Demo plan (3 minutes, no slides)
-
-- **0:00 to 0:30:** The user and problem: "You see a viral video and can't tell if it's true."
-- **0:30 to 1:45:** Paste a misleading video live. Show claims appearing, the investigation running, verdicts landing.
-- **1:45 to 2:30:** Show the explainer loop: version 1, the critic catching a mistake, the fixed version.
-- **2:30 to 3:00:** "Gemini gives you an opinion. Veritas runs an investigation." Then what's next: recomputing statistics, finding original footage, a knowledge graph of claims.
-
-Always have one pre-run result ready in case the live run is slow.
-
-## Demo videos (prepare tonight)
-
-Pick 3 to 5 videos where you already know the truth:
-- One clearly false
-- One misleading but real (out of context)
-- One true (shows Veritas doesn't call everything fake)
-
-For each, write down: the claims, the truth, the best sources.
-
-## Checklist before leaving home
-
-- Government-issued photo ID
-- Laptop, charger, extension cord
-- Gemini API key set up (check the participant guide for DeepMind resources or credits)
-- Demo video links saved
-- This README
-- Claude Code working on the laptop
-
-## Open questions to check at the event
-
-- Does gemini-4-argon accept YouTube links directly, or do videos need uploading?
-- Are Managed Agents available on gemini-4-argon, or only on Flash models?
-- Any DeepMind credits or special access for participants?
+- **Narrated shareable MP4** — the managed agent's MP4 is currently silent (rendering the narration audio into it hit a payload size limit under hackathon time pressure); muxing the narration track back in is the near-term fix.
+- **Clip vs. original comparison** — show the exact source footage side by side with the clip as used, so "old footage presented as new" and similar techniques are visible, not just asserted.
+- **Claims knowledge graph** — persist claims, verdicts, and sources across videos so recurring claims, repeat sources, and patterns across multiple videos from the same creator become queryable over time.
