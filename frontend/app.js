@@ -14,6 +14,9 @@ const videoVerdictBannerInner = videoVerdictBanner.querySelector(".verdict-banne
 const videoVerdictLabel = document.getElementById("video-verdict-label");
 const videoVerdictExplanation = document.getElementById("video-verdict-explanation");
 const videoVerdictTechniques = document.getElementById("video-verdict-techniques");
+const explainerSection = document.getElementById("explainer-section");
+const explainerFrame = document.getElementById("explainer-frame");
+const explainerFullscreenLink = document.getElementById("explainer-fullscreen-link");
 
 let activeTab = "youtube";
 let currentClaims = [];
@@ -45,6 +48,18 @@ function resetResults() {
   summarySection.hidden = true;
   verdictsSection.hidden = true;
   videoVerdictBanner.hidden = true;
+  explainerSection.hidden = true;
+  explainerFrame.src = "about:blank";
+}
+
+function renderExplainer(explainerUrl) {
+  if (!explainerUrl) {
+    explainerSection.hidden = true;
+    return;
+  }
+  explainerFrame.src = explainerUrl;
+  explainerFullscreenLink.href = explainerUrl;
+  explainerSection.hidden = false;
 }
 
 function renderClaimsTable(claims) {
@@ -158,11 +173,16 @@ function handleEvent(evt) {
       setStatus("Gemini 4 Argon is weighing the evidence and judging each claim...");
       break;
 
+    case "generating_explainer":
+      setStatus("Gemini 4 Argon is generating an animated explainer of the results...");
+      break;
+
     case "done":
       renderVideoVerdict(evt.result.video_verdict);
       summaryText.textContent = evt.result.what_actually_happened;
       summarySection.hidden = !evt.result.what_actually_happened;
       renderVerdicts(evt.result.verdicts || []);
+      renderExplainer(evt.result.explainer_url);
       setStatus("Analysis complete.");
       break;
 
