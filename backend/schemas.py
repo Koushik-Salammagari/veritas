@@ -127,3 +127,22 @@ class Critique(BaseModel):
     checks: list[CritiqueCheckResult]
     issues: list[CritiqueIssue]
     approved: bool = Field(description="True only if every check passed and issues is empty")
+
+
+SourceVerificationStatus = Literal["verified", "broken", "unsupported"]
+
+
+class SourceVerification(BaseModel):
+    claim_index: int
+    url: str
+    title: str
+    status: SourceVerificationStatus = Field(
+        description="'verified': loads and supports the claim. 'broken': doesn't load. "
+        "'unsupported': loads but content doesn't support the claim."
+    )
+    notes: str = Field(description="One brief sentence explaining the status")
+
+
+class AgentTaskResult(BaseModel):
+    video_url: str | None = Field(default=None, description="URL to download the rendered MP4, if rendering succeeded")
+    source_verifications: list[SourceVerification] = Field(default_factory=list)
