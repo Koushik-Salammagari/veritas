@@ -16,11 +16,17 @@ const videoVerdictExplanation = document.getElementById("video-verdict-explanati
 const videoVerdictTechniques = document.getElementById("video-verdict-techniques");
 const explainerSection = document.getElementById("explainer-section");
 const explainerVersionsContainer = document.getElementById("explainer-versions");
+const agentSection = document.getElementById("agent-section");
+const agentStatusEl = document.getElementById("agent-status");
+const agentDownloadLink = document.getElementById("agent-download-link");
+const agentSourcesSummary = document.getElementById("agent-sources-summary");
 
 let activeTab = "youtube";
 let currentClaims = [];
+let currentVerdicts = [];
 let investigatedCount = 0;
 let totalToInvestigate = 0;
+let agentPollHandle = null;
 
 tabButtons.forEach((btn) => {
   btn.addEventListener("click", () => {
@@ -38,6 +44,7 @@ function setStatus(message, isError = false) {
 
 function resetResults() {
   currentClaims = [];
+  currentVerdicts = [];
   investigatedCount = 0;
   totalToInvestigate = 0;
   claimsBody.innerHTML = "";
@@ -49,6 +56,15 @@ function resetResults() {
   videoVerdictBanner.hidden = true;
   explainerSection.hidden = true;
   explainerVersionsContainer.innerHTML = "";
+  agentSection.hidden = true;
+  agentStatusEl.textContent = "";
+  agentStatusEl.classList.remove("agent-error");
+  agentDownloadLink.hidden = true;
+  agentSourcesSummary.innerHTML = "";
+  if (agentPollHandle) {
+    clearTimeout(agentPollHandle);
+    agentPollHandle = null;
+  }
 }
 
 function renderExplainerVersions(versions) {
@@ -141,16 +157,20 @@ function setStatusCell(index, label, cssClass) {
   cell.innerHTML = cssClass === "status-investigating" ? `<span class="spinner"></span>${label}` : label;
 }
 
-function sourcesHtml(sources) {
+function sourcesHtml(sources, claimIndex) {
   if (!sources || sources.length === 0) {
     return '<span class="no-sources">No sources</span>';
   }
   return sources
-    .map((s) => `<a href="${s.url}" target="_blank" rel="noopener noreferrer">${s.title || s.url}</a>`)
+    .map(
+      (s) =>
+        `<a href="${s.url}" target="_blank" rel="noopener noreferrer" data-source-key="${claimIndex}|${s.url}">${s.title || s.url}</a>`
+    )
     .join("");
 }
 
 function renderVerdicts(verdicts) {
+  currentVerdicts = verdicts;
   verdictsContainer.innerHTML = "";
   verdicts
     .sort((a, b) => a.claim_index - b.claim_index)
@@ -174,12 +194,111 @@ function renderVerdicts(verdicts) {
         </div>
         <p class="claim-text">"${claim ? claim.exact_wording : ""}"</p>
         <p class="explanation">${v.explanation}</p>
-        <div class="sources"><span class="sources-label">Sources:</span>${sourcesHtml(v.sources)}</div>
+        <div class="sources"><span class="sources-label">Sources:</span>${sourcesHtml(v.sources, v.claim_index)}</div>
       `;
       verdictsContainer.appendChild(card);
       setStatusCell(v.claim_index, "judged", "status-done");
     });
   verdictsSection.hidden = verdicts.length === 0;
+}
+
+function startAgentTask(runId, filename) {
+  agentSection.hidden = false;
+  agentStatusEl.classList.remove("agent-error");
+  agentStatusEl.innerHTML = '<span class="spinner-inline"></span> Managed Agent working in sandbox...';
+
+  fetch("/api/agent-tasks", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ run_id: runId, filename, claims: currentClaims, verdicts: currentVerdicts }),
+  })
+    .then((res) => {
+      if (!res.ok) throw new Error(`Failed to start agent task (${res.status})`);
+      return res.json();
+    })
+    .then((data) => pollAgentTask(data.task_id))
+    .catch((err) => {
+      agentStatusEl.textContent = `Managed Agent could not start: ${err.message || err}`;
+      agentStatusEl.classList.add("agent-error");
+    });
+}
+
+function pollAgentTask(taskId) {
+  fetch(`/api/agent-tasks/${taskId}`)
+    .then((res) => {
+      if (!res.ok) throw new Error(`Lost track of agent task (${res.status})`);
+      return res.json();
+    })
+    .then((task) => {
+      if (task.status === "working") {
+        agentPollHandle = setTimeout(() => pollAgentTask(taskId), 8000);
+      } else if (task.status === "done") {
+        renderAgentResult(task.result);
+      } else if (task.status === "failed") {
+        agentStatusEl.textContent = `Managed Agent failed: ${task.error || "unknown error"}. Everything else above is unaffected.`;
+        agentStatusEl.classList.add("agent-error");
+      }
+    })
+    .catch((err) => {
+      agentStatusEl.textContent = `Lost track of the Managed Agent: ${err.message || err}`;
+      agentStatusEl.classList.add("agent-error");
+    });
+}
+
+function renderAgentResult(result) {
+  agentStatusEl.classList.remove("agent-error");
+  agentStatusEl.textContent = "Managed Agent finished.";
+
+  if (result.video_url) {
+    agentDownloadLink.href = result.video_url;
+    agentDownloadLink.hidden = false;
+  } else {
+    agentDownloadLink.hidden = true;
+  }
+
+  const verifications = result.source_verifications || [];
+  const counts = { verified: 0, broken: 0, unsupported: 0 };
+  verifications.forEach((v) => {
+    counts[v.status] = (counts[v.status] || 0) + 1;
+  });
+
+  const countsHtml = `
+    <div class="agent-summary-counts">
+      <span class="agent-count-pill count-verified">${counts.verified} verified</span>
+      <span class="agent-count-pill count-broken">${counts.broken} broken</span>
+      <span class="agent-count-pill count-unsupported">${counts.unsupported} don't support claim</span>
+    </div>
+  `;
+  const rowsHtml = verifications
+    .map(
+      (v) => `
+        <div class="agent-source-row status-${v.status}">
+          <a href="${v.url}" target="_blank" rel="noopener noreferrer">${v.title || v.url}</a> — claim #${v.claim_index + 1}
+          <div class="agent-source-notes">${v.notes}</div>
+        </div>
+      `
+    )
+    .join("");
+  agentSourcesSummary.innerHTML = `${countsHtml}<div class="agent-sources-list">${rowsHtml}</div>`;
+
+  applySourceFlags(verifications);
+}
+
+function applySourceFlags(verifications) {
+  verifications
+    .filter((v) => v.status !== "verified")
+    .forEach((v) => {
+      const key = `${v.claim_index}|${v.url}`;
+      document.querySelectorAll(".sources a").forEach((a) => {
+        const alreadyFlagged = a.nextElementSibling && a.nextElementSibling.classList.contains("source-flag");
+        if (a.dataset.sourceKey === key && !alreadyFlagged) {
+          const flag = document.createElement("span");
+          flag.className = `source-flag status-${v.status}`;
+          flag.textContent = v.status === "broken" ? "broken" : "doesn't support";
+          a.after(flag);
+        }
+      });
+    });
 }
 
 function handleEvent(evt) {
@@ -234,14 +353,21 @@ function handleEvent(evt) {
       setStatus(`Fixing v${evt.from_version} to produce v${evt.to_version}...`);
       break;
 
-    case "done":
+    case "done": {
       renderVideoVerdict(evt.result.video_verdict);
       summaryText.textContent = evt.result.what_actually_happened;
       summarySection.hidden = !evt.result.what_actually_happened;
       renderVerdicts(evt.result.verdicts || []);
       renderExplainerVersions(evt.result.versions);
       setStatus("Analysis complete.");
+
+      const versions = evt.result.versions || [];
+      const lastVersion = versions[versions.length - 1];
+      if (lastVersion && lastVersion.approved && evt.result.run_id) {
+        startAgentTask(evt.result.run_id, lastVersion.filename);
+      }
       break;
+    }
 
     case "error":
       setStatus(evt.message || "Something went wrong.", true);
