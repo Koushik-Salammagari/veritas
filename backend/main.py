@@ -15,6 +15,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = BASE_DIR / "frontend"
 UPLOADS_DIR = BASE_DIR / "uploads"
 EXPLAINERS_DIR = BASE_DIR / "explainers"
+UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 EXPLAINERS_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="Veritas")
