@@ -271,21 +271,16 @@ execution, file management, and web access. Complete BOTH tasks below, then writ
 
 TASK 1 — Render a shareable video:
 The file /workspace/explainer.html is a self-contained, auto-playing HTML animation (pure CSS/JS, no \
-build step), and /workspace/narration.wav.b64 is the base64-encoded narration audio track, already timed \
-to match the page's silent visual pacing exactly. Render a shareable MP4 WITH this narration audio muxed in:
+build step). Render it to a shareable MP4:
 1. Install what you need: `pip install playwright && playwright install --with-deps chromium`. Check \
 whether ffmpeg is already available with `which ffmpeg` before trying to install it (e.g. \
 `apt-get update && apt-get install -y ffmpeg` if missing).
-2. Decode the audio: `base64 -d /workspace/narration.wav.b64 > /workspace/narration.wav`.
-3. Use Playwright to open /workspace/explainer.html headless at 960x540 and record one full playthrough \
+2. Use Playwright to open /workspace/explainer.html headless at 960x540 and record one full playthrough \
 (about {total_duration_seconds} seconds — wait at least that long before closing the page) using \
 Playwright's built-in video recording (record_video_dir).
-4. Mux the recorded video with /workspace/narration.wav into /workspace/explainer.mp4 with ffmpeg, e.g. \
-`ffmpeg -y -i input.webm -i /workspace/narration.wav -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest \
-/workspace/explainer.mp4`. The video is silent (muted auto-play) but its pacing already matches \
-narration.wav exactly, so this produces a correctly synced narrated video.
-5. Confirm /workspace/explainer.mp4 exists, is not 0 bytes, and has both a video and an audio stream \
-(e.g. check with `ffprobe -v error -show_entries stream=codec_type /workspace/explainer.mp4`).
+3. Convert the resulting .webm to /workspace/explainer.mp4 with ffmpeg \
+(e.g. `ffmpeg -y -i input.webm -c:v libx264 -pix_fmt yuv420p /workspace/explainer.mp4`).
+4. Confirm /workspace/explainer.mp4 exists and is not 0 bytes.
 
 TASK 2 — Verify sources:
 Below is a numbered list of EXACTLY {num_sources} source citations used in a fact-check, each tied to a \
@@ -949,53 +944,27 @@ def _build_agent_sources_payload(claims: list[Claim], verdicts: list[Verdict]) -
     return payload
 
 
-def _extract_narration_from_html(html: str) -> list[dict]:
-    """Recover (segment_id, duration_ms, wav_bytes) in slide order from a harness-injected explainer."""
+def _extract_segment_durations_ms(html: str) -> dict[str, int]:
+    """Read the harness's per-slide durations (ms) straight out of the rendered explainer HTML."""
     import re
 
-    order_match = re.search(r"var ORDER = (\[.*?\]);", html)
     durations_match = re.search(r"var DURATIONS = (\{.*?\});", html)
-    if not order_match or not durations_match:
-        return []
-    order = json.loads(order_match.group(1))
-    durations_ms = json.loads(durations_match.group(1))
-
-    audio_by_id = dict(re.findall(r'<audio data-segment="([^"]+)" src="data:audio/wav;base64,([^"]+)"', html))
-
-    items = []
-    for segment_id in order:
-        b64 = audio_by_id.get(segment_id)
-        if not b64:
-            continue
-        items.append(
-            {
-                "segment_id": segment_id,
-                "duration_ms": durations_ms.get(segment_id, 6000),
-                "wav_bytes": base64.b64decode(b64),
-            }
-        )
-    return items
+    if not durations_match:
+        return {}
+    return json.loads(durations_match.group(1))
 
 
-def _build_combined_narration_wav(items: list[dict]) -> bytes:
-    """Concatenate per-segment narration audio, silence-padded to each slide's exact duration."""
-    with wave.open(io.BytesIO(items[0]["wav_bytes"]), "rb") as first:
-        n_channels, sample_width, framerate = first.getnchannels(), first.getsampwidth(), first.getframerate()
+def _strip_audio_pool(html: str) -> str:
+    """Drop the embedded base64 narration audio before sending the HTML to the managed agent.
 
-    out_buf = io.BytesIO()
-    with wave.open(out_buf, "wb") as out:
-        out.setnchannels(n_channels)
-        out.setsampwidth(sample_width)
-        out.setframerate(framerate)
-        for item in items:
-            with wave.open(io.BytesIO(item["wav_bytes"]), "rb") as seg:
-                frames = seg.readframes(seg.getnframes())
-            out.writeframes(frames)
-            target_frames = round(item["duration_ms"] / 1000 * framerate)
-            segment_frames = len(frames) // (n_channels * sample_width)
-            silence_frames = max(0, target_frames - segment_frames)
-            out.writeframes(b"\x00" * (silence_frames * n_channels * sample_width))
-    return out_buf.getvalue()
+    The muted auto-play recording the agent captures never touches these <audio> elements (the
+    harness only plays audio in narration mode, which the silent headless recording never enters),
+    so removing them has no effect on the recorded video — it just keeps the agent's prompt payload
+    small instead of inlining several megabytes of base64 audio into every call.
+    """
+    import re
+
+    return re.sub(r'<div id="audio-pool"[^>]*>.*?</div>\s*', "", html, flags=re.DOTALL)
 
 
 def run_verification_agent(
@@ -1013,24 +982,16 @@ def run_verification_agent(
     html = Path(html_path).read_text(encoding="utf-8")
     sources_payload = _build_agent_sources_payload(claims, verdicts)
 
-    narration_items = _extract_narration_from_html(html)
-    total_duration_seconds = round(sum(item["duration_ms"] for item in narration_items) / 1000) if narration_items else 30
-    audio_write_cmd = ""
-    if narration_items:
-        combined_wav = _build_combined_narration_wav(narration_items)
-        wav_b64 = base64.b64encode(combined_wav).decode("ascii")
-        audio_write_cmd = (
-            f"cat > /workspace/narration.wav.b64 << '{_AGENT_WRITE_FILE_MARKER}_AUDIO'\n"
-            f"{wav_b64}\n{_AGENT_WRITE_FILE_MARKER}_AUDIO\n\n"
-        )
+    durations_ms = _extract_segment_durations_ms(html)
+    total_duration_seconds = round(sum(durations_ms.values()) / 1000) if durations_ms else 30
+    agent_html = _strip_audio_pool(html)
 
     write_file_cmd = (
         f"mkdir -p /workspace && cat > /workspace/explainer.html << '{_AGENT_WRITE_FILE_MARKER}'\n"
-        f"{html}\n{_AGENT_WRITE_FILE_MARKER}\n\n"
-        + audio_write_cmd
+        f"{agent_html}\n{_AGENT_WRITE_FILE_MARKER}\n"
     )
     prompt = (
-        "First, run this exact bash command to create the input files (do not modify their contents):\n\n"
+        "First, run this exact bash command to create the input file (do not modify its contents):\n\n"
         + write_file_cmd
         + "\n\n"
         + AGENT_VERIFICATION_PROMPT_TEMPLATE.format(
