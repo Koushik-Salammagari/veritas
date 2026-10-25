@@ -15,8 +15,7 @@ const videoVerdictLabel = document.getElementById("video-verdict-label");
 const videoVerdictExplanation = document.getElementById("video-verdict-explanation");
 const videoVerdictTechniques = document.getElementById("video-verdict-techniques");
 const explainerSection = document.getElementById("explainer-section");
-const explainerFrame = document.getElementById("explainer-frame");
-const explainerFullscreenLink = document.getElementById("explainer-fullscreen-link");
+const explainerVersionsContainer = document.getElementById("explainer-versions");
 
 let activeTab = "youtube";
 let currentClaims = [];
@@ -49,16 +48,50 @@ function resetResults() {
   verdictsSection.hidden = true;
   videoVerdictBanner.hidden = true;
   explainerSection.hidden = true;
-  explainerFrame.src = "about:blank";
+  explainerVersionsContainer.innerHTML = "";
 }
 
-function renderExplainer(explainerUrl) {
-  if (!explainerUrl) {
+function renderExplainerVersions(versions) {
+  explainerVersionsContainer.innerHTML = "";
+  if (!versions || versions.length === 0) {
     explainerSection.hidden = true;
     return;
   }
-  explainerFrame.src = explainerUrl;
-  explainerFullscreenLink.href = explainerUrl;
+  versions.forEach((v) => {
+    const card = document.createElement("div");
+    card.className = `version-card ${v.approved ? "version-approved" : "version-rejected"}`;
+    const statusLabel = v.approved ? "✓ Approved" : `${v.issues.length} issue${v.issues.length === 1 ? "" : "s"}`;
+    const checksHtml = (v.checks || [])
+      .map(
+        (c) =>
+          `<div class="check-row ${c.passed ? "pass" : "fail"}">${c.passed ? "✓" : "✗"} ${c.check.replace(/_/g, " ")}</div>`
+      )
+      .join("");
+    const issuesHtml =
+      v.issues && v.issues.length
+        ? `<ul class="issues-list">${v.issues
+            .map(
+              (i) =>
+                `<li><span class="issue-slide">${i.slide}</span> (${i.timestamp}): ${i.description}</li>`
+            )
+            .join("")}</ul>`
+        : "";
+    card.innerHTML = `
+      <div class="version-card-header">
+        <span class="version-badge">v${v.version}</span>
+        <span class="version-status ${v.approved ? "approved" : "rejected"}">${statusLabel}</span>
+      </div>
+      <div class="explainer-frame-wrap">
+        <iframe src="${v.url}" title="Explainer v${v.version}" loading="lazy"></iframe>
+      </div>
+      <a class="explainer-link" href="${v.url}" target="_blank" rel="noopener noreferrer">Open full screen ↗</a>
+      <div class="critic-notes">
+        <div class="checks-list">${checksHtml}</div>
+        ${issuesHtml}
+      </div>
+    `;
+    explainerVersionsContainer.appendChild(card);
+  });
   explainerSection.hidden = false;
 }
 
@@ -177,12 +210,32 @@ function handleEvent(evt) {
       setStatus("Gemini 4 Argon is generating an animated explainer of the results...");
       break;
 
+    case "rendering":
+      setStatus(`Rendering v${evt.version} in a headless browser...`);
+      break;
+
+    case "critiquing":
+      setStatus(`Critic is reviewing v${evt.version}...`);
+      break;
+
+    case "critique_result":
+      if (evt.approved) {
+        setStatus(`v${evt.version} approved.`);
+      } else {
+        setStatus(`Found ${evt.issues.length} issue(s) in v${evt.version}.`);
+      }
+      break;
+
+    case "fixing":
+      setStatus(`Fixing v${evt.from_version} to produce v${evt.to_version}...`);
+      break;
+
     case "done":
       renderVideoVerdict(evt.result.video_verdict);
       summaryText.textContent = evt.result.what_actually_happened;
       summarySection.hidden = !evt.result.what_actually_happened;
       renderVerdicts(evt.result.verdicts || []);
-      renderExplainer(evt.result.explainer_url);
+      renderExplainerVersions(evt.result.versions);
       setStatus("Analysis complete.");
       break;
 
