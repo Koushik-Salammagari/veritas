@@ -5,15 +5,37 @@ from pydantic import BaseModel, Field
 ClaimType = Literal["statistic", "event", "quote", "other"]
 
 
-class Claim(BaseModel):
+class ExtractedClaim(BaseModel):
+    """One occurrence of a claim exactly as the extractor saw it (pre-merge)."""
+
     speaker: str = Field(description="Who made the claim, e.g. a name or role shown/heard in the video")
     timestamp: str = Field(description="Timestamp in MM:SS format marking where the claim occurs")
     exact_wording: str = Field(description="The claim transcribed verbatim, not paraphrased")
     claim_type: ClaimType = Field(description="One of: statistic, event, quote, other")
 
 
+class EditingSignal(BaseModel):
+    timestamp: str = Field(description="Timestamp in MM:SS format, or a MM:SS-MM:SS range")
+    description: str = Field(
+        description="What the sign of editing is, e.g. a cut, a repeated segment, an overlay, or a caption"
+    )
+
+
 class ClaimExtractionResult(BaseModel):
-    claims: list[Claim]
+    claims: list[ExtractedClaim]
+    editing_signals: list[EditingSignal] = Field(
+        default_factory=list,
+        description="Signs of editing noticed while watching: cuts, repeated segments, overlays, captions",
+    )
+
+
+class Claim(BaseModel):
+    """A claim after merging duplicate occurrences from the extraction step."""
+
+    speaker: str
+    timestamps: list[str] = Field(description="All timestamps (MM:SS) where this exact claim occurs, in order")
+    exact_wording: str
+    claim_type: ClaimType
 
 
 class Source(BaseModel):
@@ -43,7 +65,26 @@ class Verdict(BaseModel):
     sources: list[Source] = Field(description="Sources supporting this verdict; required for 'false' or 'misleading'")
 
 
+VideoVerdictLabel = Literal["accurate", "misleading", "false"]
+VideoEditingTechnique = Literal[
+    "repeated or spliced segments",
+    "old footage presented as new",
+    "missing context",
+    "misleading title or caption",
+    "cherry-picked clips",
+]
+
+
+class VideoVerdict(BaseModel):
+    verdict: VideoVerdictLabel
+    techniques: list[VideoEditingTechnique] = Field(
+        default_factory=list, description="Video-level editing techniques used; empty if verdict is 'accurate'"
+    )
+    explanation: str = Field(description="Short explanation (1-3 sentences) of the overall video verdict")
+
+
 class JudgeResult(BaseModel):
+    video_verdict: VideoVerdict
     verdicts: list[Verdict]
     what_actually_happened: str = Field(
         description="One paragraph explaining what is actually true about the video's overall topic"
