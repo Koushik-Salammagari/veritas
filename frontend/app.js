@@ -9,6 +9,11 @@ const summarySection = document.getElementById("summary-section");
 const summaryText = document.getElementById("summary-text");
 const verdictsSection = document.getElementById("verdicts-section");
 const verdictsContainer = document.getElementById("verdicts");
+const videoVerdictBanner = document.getElementById("video-verdict-banner");
+const videoVerdictBannerInner = videoVerdictBanner.querySelector(".verdict-banner");
+const videoVerdictLabel = document.getElementById("video-verdict-label");
+const videoVerdictExplanation = document.getElementById("video-verdict-explanation");
+const videoVerdictTechniques = document.getElementById("video-verdict-techniques");
 
 let activeTab = "youtube";
 let currentClaims = [];
@@ -39,6 +44,7 @@ function resetResults() {
   resultsSection.hidden = true;
   summarySection.hidden = true;
   verdictsSection.hidden = true;
+  videoVerdictBanner.hidden = true;
 }
 
 function renderClaimsTable(claims) {
@@ -47,9 +53,11 @@ function renderClaimsTable(claims) {
   claims.forEach((claim, i) => {
     const row = document.createElement("tr");
     row.id = `claim-row-${i}`;
+    const repeatedBadge =
+      claim.timestamps.length > 1 ? `<span class="repeated-badge">repeated ${claim.timestamps.length}x</span>` : "";
     row.innerHTML = `
       <td>${i + 1}</td>
-      <td>${claim.timestamp}</td>
+      <td>${claim.timestamps.join(", ")}${repeatedBadge}</td>
       <td>${claim.speaker}</td>
       <td>${claim.exact_wording}</td>
       <td><span class="badge badge-${claim.claim_type}">${claim.claim_type}</span></td>
@@ -58,6 +66,20 @@ function renderClaimsTable(claims) {
     claimsBody.appendChild(row);
   });
   resultsSection.hidden = claims.length === 0;
+}
+
+function renderVideoVerdict(videoVerdict) {
+  if (!videoVerdict) {
+    videoVerdictBanner.hidden = true;
+    return;
+  }
+  videoVerdictBannerInner.className = `verdict-banner banner-${videoVerdict.verdict}`;
+  videoVerdictLabel.textContent = videoVerdict.verdict;
+  videoVerdictExplanation.textContent = videoVerdict.explanation;
+  videoVerdictTechniques.innerHTML = (videoVerdict.techniques || [])
+    .map((t) => `<span class="technique-badge">${t}</span>`)
+    .join("");
+  videoVerdictBanner.hidden = false;
 }
 
 function setAllStatusCells(label, cssClass) {
@@ -137,6 +159,7 @@ function handleEvent(evt) {
       break;
 
     case "done":
+      renderVideoVerdict(evt.result.video_verdict);
       summaryText.textContent = evt.result.what_actually_happened;
       summarySection.hidden = !evt.result.what_actually_happened;
       renderVerdicts(evt.result.verdicts || []);

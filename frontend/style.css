@@ -303,3 +303,56 @@ tr:last-child td {
   color: var(--muted);
   font-style: italic;
 }
+
+#video-verdict-banner {
+  margin-top: 28px;
+}
+
+.verdict-banner {
+  border-radius: 14px;
+  padding: 22px 24px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  border-top: 5px solid var(--unverifiable);
+}
+
+.verdict-banner.banner-accurate { border-top-color: var(--true); background: rgba(79, 209, 126, 0.07); }
+.verdict-banner.banner-misleading { border-top-color: var(--misleading); background: rgba(245, 166, 35, 0.07); }
+.verdict-banner.banner-false { border-top-color: var(--false); background: rgba(255, 92, 92, 0.07); }
+
+.verdict-banner-label {
+  font-size: 1.4rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+.banner-accurate .verdict-banner-label { color: var(--true); }
+.banner-misleading .verdict-banner-label { color: var(--misleading); }
+.banner-false .verdict-banner-label { color: var(--false); }
+
+.verdict-banner-explanation {
+  margin: 0 0 10px;
+  color: var(--text);
+  line-height: 1.5;
+  font-size: 1.02rem;
+}
+
+.verdict-banner-techniques {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.repeated-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  font-weight: 600;
+  background: rgba(245, 166, 35, 0.15);
+  color: var(--misleading);
+  border: 1px solid rgba(245, 166, 35, 0.35);
+}
