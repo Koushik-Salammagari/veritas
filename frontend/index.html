@@ -13,6 +13,11 @@
   </header>
 
   <main>
+    <p id="replay-banner" class="replay-banner" hidden>
+      🔁 <strong>Replay of a real run</strong> — recorded <span id="replay-banner-date"></span>, this is not live.
+      <button type="button" id="replay-banner-close">Start a new live run</button>
+    </p>
+
     <section class="input-card">
       <div class="tabs">
         <button class="tab-btn active" data-tab="youtube">YouTube link</button>
@@ -30,6 +35,15 @@
       </form>
 
       <p id="status" class="status" hidden></p>
+    </section>
+
+    <section id="past-runs-section">
+      <div class="trace-header">
+        <h2>Past investigations</h2>
+        <button type="button" id="past-runs-refresh-btn" class="trace-toggle">Refresh</button>
+      </div>
+      <p id="past-runs-empty" class="section-hint">No saved runs yet — run an investigation to save one.</p>
+      <div id="past-runs-list" class="past-runs-list"></div>
     </section>
 
     <section id="trace-section" hidden>
@@ -78,7 +92,7 @@
 
     <section id="explainer-section" hidden>
       <h2>Explainer versions</h2>
-      <p class="section-hint">Each version is rendered, watched by a critic, and fixed until approved (up to 3 rounds).</p>
+      <p class="section-hint">Each version is rendered, watched by a critic, and fixed until approved (up to 2 rounds).</p>
       <div id="explainer-versions"></div>
     </section>
 

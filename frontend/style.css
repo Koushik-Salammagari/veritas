@@ -833,3 +833,113 @@ tr:last-child td {
   -webkit-line-clamp: 2;
   overflow: hidden;
 }
+
+.replay-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  background: rgba(167, 139, 250, 0.12);
+  border: 1px solid rgba(167, 139, 250, 0.45);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 10px 16px;
+  margin-bottom: 18px;
+  font-size: 0.9rem;
+}
+
+.replay-banner[hidden] {
+  display: none;
+}
+
+.replay-banner strong {
+  color: var(--blocked);
+}
+
+#replay-banner-close {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid rgba(167, 139, 250, 0.5);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+#replay-banner-close:hover {
+  border-color: var(--blocked);
+  color: var(--blocked);
+}
+
+#past-runs-section {
+  margin-top: 24px;
+  max-width: 1100px;
+}
+
+.past-runs-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.past-run-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--unverifiable);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 0.85rem;
+}
+
+.past-run-row.verdict-accurate,
+.past-run-row.verdict-true { border-left-color: var(--true); }
+.past-run-row.verdict-misleading { border-left-color: var(--misleading); }
+.past-run-row.verdict-false { border-left-color: var(--false); }
+.past-run-row.verdict-error { border-left-color: var(--false); opacity: 0.75; }
+
+.past-run-date {
+  color: var(--muted);
+  white-space: nowrap;
+  font-size: 0.8rem;
+}
+
+.past-run-source {
+  flex: 1 1 260px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.past-run-meta {
+  color: var(--muted);
+  white-space: nowrap;
+  font-size: 0.8rem;
+}
+
+.past-run-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.past-run-actions button {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 0.78rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.past-run-actions button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}

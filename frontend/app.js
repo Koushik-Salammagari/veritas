@@ -24,10 +24,17 @@ const traceSection = document.getElementById("trace-section");
 const traceGrid = document.getElementById("trace-grid");
 const traceSummaryLine = document.getElementById("trace-summary-line");
 const traceToggleBtn = document.getElementById("trace-toggle-btn");
+const replayBanner = document.getElementById("replay-banner");
+const replayBannerDate = document.getElementById("replay-banner-date");
+const replayBannerClose = document.getElementById("replay-banner-close");
+const pastRunsEmpty = document.getElementById("past-runs-empty");
+const pastRunsList = document.getElementById("past-runs-list");
+const pastRunsRefreshBtn = document.getElementById("past-runs-refresh-btn");
 
 let activeTab = "youtube";
 let currentClaims = [];
 let currentVerdicts = [];
+let isReplaying = false;
 let investigatedCount = 0;
 let totalToInvestigate = 0;
 let agentPollHandle = null;
@@ -176,6 +183,9 @@ function checkTraceSettled() {
     }
     traceSummaryCache = computeTraceSummary();
     setTraceCollapsed(true);
+    if (!isReplaying && typeof loadPastRuns === "function") {
+      loadPastRuns();
+    }
   }
 }
 
@@ -541,9 +551,17 @@ function handleEvent(evt) {
       setTraceStatus("judge", "running", "Weighing evidence and judging each claim...");
       break;
 
-    case "judged":
-      setTraceStatus("judge", "done", `Verdict: ${evt.video_verdict.toUpperCase()} · ${evt.claims_judged} claim(s)`);
+    case "judged": {
+      const verdictLabel = evt.result.video_verdict.verdict.toUpperCase();
+      setTraceStatus("judge", "done", `Verdict: ${verdictLabel} · ${evt.result.verdicts.length} claim(s)`);
+      // Show the verdict as soon as it's ready, without waiting for the explainer/critic loop.
+      renderVideoVerdict(evt.result.video_verdict);
+      summaryText.textContent = evt.result.what_actually_happened;
+      summarySection.hidden = !evt.result.what_actually_happened;
+      renderVerdicts(evt.result.verdicts || []);
+      setStatus("Verdict ready. Generating a shareable explainer...");
       break;
+    }
 
     case "generating_explainer":
       setStatus("Gemini 4 Argon is generating an animated explainer of the results...");
@@ -599,18 +617,43 @@ function handleEvent(evt) {
       summarySection.hidden = !evt.result.what_actually_happened;
       renderVerdicts(evt.result.verdicts || []);
       renderExplainerVersions(evt.result.versions);
-      setStatus("Analysis complete.");
+      if (!isReplaying) setStatus("Analysis complete.");
 
       tracePipelineDone = true;
-      const versions = evt.result.versions || [];
-      const lastVersion = versions[versions.length - 1];
-      if (lastVersion && lastVersion.approved && evt.result.run_id) {
-        startAgentTask(evt.result.run_id, lastVersion.filename);
-      } else {
-        checkTraceSettled();
+      if (!isReplaying) {
+        const versions = evt.result.versions || [];
+        const lastVersion = versions[versions.length - 1];
+        if (lastVersion && lastVersion.approved && evt.result.run_id) {
+          startAgentTask(evt.result.run_id, lastVersion.filename);
+        } else {
+          checkTraceSettled();
+        }
       }
       break;
     }
+
+    case "agent_started":
+      agentSection.hidden = false;
+      agentStatusEl.classList.remove("agent-error");
+      agentStatusEl.innerHTML = '<span class="spinner-inline"></span> Managed Agent working in sandbox...';
+      traceAgentStarted = true;
+      createTraceCard("agent", "Managed Agent", "Managed Agent", "model-agent");
+      setTraceStatus("agent", "running", `Rendering MP4 and verifying ${evt.total_sources} source(s) in sandbox...`);
+      break;
+
+    case "agent_done":
+      renderAgentResult(evt.result);
+      traceAgentSettled = true;
+      if (!isReplaying) checkTraceSettled();
+      break;
+
+    case "agent_failed":
+      agentStatusEl.textContent = `Managed Agent failed: ${evt.error || "unknown error"}. Everything else above is unaffected.`;
+      agentStatusEl.classList.add("agent-error");
+      setTraceStatus("agent", "failed", truncate(evt.error || "unknown error", 60));
+      traceAgentSettled = true;
+      if (!isReplaying) checkTraceSettled();
+      break;
 
     case "error":
       setStatus(evt.message || "Something went wrong.", true);
@@ -621,13 +664,126 @@ function handleEvent(evt) {
         }
       });
       tracePipelineDone = true;
-      checkTraceSettled();
+      if (!isReplaying) checkTraceSettled();
       break;
 
     default:
       break;
   }
 }
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function showReplayBanner(createdAt) {
+  replayBanner.hidden = false;
+  replayBannerDate.textContent = createdAt ? new Date(createdAt).toLocaleString() : "an earlier run";
+}
+
+function hideReplayBanner() {
+  replayBanner.hidden = true;
+}
+
+replayBannerClose.addEventListener("click", () => {
+  hideReplayBanner();
+  isReplaying = false;
+  resetResults();
+  resetTrace();
+  setStatus("");
+});
+
+async function replayRun(runId, speed) {
+  isReplaying = true;
+  submitBtn.disabled = true;
+  resetResults();
+  resetTrace();
+  setStatus(speed ? "Loading replay..." : "Loading saved run...");
+
+  try {
+    const [eventsRes, metaRes] = await Promise.all([
+      fetch(`/explainers/${runId}/events.ndjson`),
+      fetch(`/explainers/${runId}/meta.json`),
+    ]);
+    if (!eventsRes.ok) throw new Error(`Could not load run ${runId} (${eventsRes.status})`);
+    const text = await eventsRes.text();
+    const events = text
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .map((l) => JSON.parse(l));
+    const meta = metaRes.ok ? await metaRes.json() : null;
+    showReplayBanner(meta ? meta.created_at : null);
+    setStatus(speed ? `Replaying pipeline trace at ${speed}x...` : "Replaying pipeline trace...");
+
+    let prevT = events.length && typeof events[0].t === "number" ? events[0].t : 0;
+    for (const evt of events) {
+      if (speed && typeof evt.t === "number") {
+        const delayMs = Math.max(0, (evt.t - prevT) / speed) * 1000;
+        if (delayMs > 20) await sleep(delayMs);
+      }
+      if (typeof evt.t === "number") prevT = evt.t;
+      handleEvent(evt);
+    }
+    setStatus("Replay complete.");
+  } catch (err) {
+    setStatus(err.message || "Could not replay this run.", true);
+  } finally {
+    checkTraceSettled();
+    submitBtn.disabled = false;
+  }
+}
+
+function formatDuration(seconds) {
+  if (seconds === null || seconds === undefined) return "";
+  return formatElapsed(seconds * 1000);
+}
+
+function renderPastRunRow(meta) {
+  const row = document.createElement("div");
+  const verdictClass = meta.error ? "verdict-error" : meta.video_verdict ? `verdict-${meta.video_verdict}` : "";
+  row.className = `past-run-row ${verdictClass}`;
+  const dateStr = meta.created_at ? new Date(meta.created_at).toLocaleString() : "unknown time";
+  const verdictLabel = meta.error ? "ERROR" : (meta.video_verdict || "n/a").toUpperCase();
+  const agentNote = meta.agent
+    ? meta.agent.status === "done"
+      ? " · agent ✓"
+      : meta.agent.status === "failed"
+        ? " · agent ✗"
+        : ""
+    : "";
+  row.innerHTML = `
+    <span class="past-run-date">${dateStr}</span>
+    <span class="past-run-source" title="${meta.source || ""}">${meta.source || "unknown source"}</span>
+    <span class="past-run-meta">${verdictLabel} · ${meta.claim_count || 0} claim(s) · ${formatDuration(meta.duration_seconds)}${agentNote}</span>
+    <div class="past-run-actions">
+      <button type="button" data-action="load">View final result</button>
+      <button type="button" data-action="replay1">▶ Replay (real pace)</button>
+      <button type="button" data-action="replay4">▶▶ Replay (4x)</button>
+    </div>
+  `;
+  row.querySelector('[data-action="load"]').addEventListener("click", () => replayRun(meta.run_id, null));
+  row.querySelector('[data-action="replay1"]').addEventListener("click", () => replayRun(meta.run_id, 1));
+  row.querySelector('[data-action="replay4"]').addEventListener("click", () => replayRun(meta.run_id, 4));
+  return row;
+}
+
+function loadPastRuns() {
+  fetch("/api/runs")
+    .then((res) => res.json())
+    .then((data) => {
+      const runs = data.runs || [];
+      pastRunsList.innerHTML = "";
+      pastRunsEmpty.hidden = runs.length > 0;
+      runs.forEach((meta) => pastRunsList.appendChild(renderPastRunRow(meta)));
+    })
+    .catch(() => {
+      /* Past runs are a convenience; ignore failures to load the list. */
+    });
+}
+
+pastRunsRefreshBtn.addEventListener("click", loadPastRuns);
+loadPastRuns();
 
 async function streamAnalysis(formData) {
   const response = await fetch("/api/analyze", { method: "POST", body: formData });
@@ -677,12 +833,15 @@ form.addEventListener("submit", async (event) => {
   }
 
   submitBtn.disabled = true;
+  isReplaying = false;
+  hideReplayBanner();
   resetResults();
   resetTrace();
   setStatus("Starting...");
 
   try {
     await streamAnalysis(formData);
+    loadPastRuns();
   } catch (err) {
     setStatus(err.message || "Something went wrong.", true);
     traceOrder.forEach((id) => {
@@ -693,6 +852,7 @@ form.addEventListener("submit", async (event) => {
     });
     tracePipelineDone = true;
     checkTraceSettled();
+    loadPastRuns();
   } finally {
     submitBtn.disabled = false;
   }
