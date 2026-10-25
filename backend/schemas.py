@@ -89,3 +89,31 @@ class JudgeResult(BaseModel):
     what_actually_happened: str = Field(
         description="One paragraph explaining what is actually true about the video's overall topic"
     )
+
+
+CritiqueCheckName = Literal[
+    "claims_and_verdicts_match",
+    "no_missing_or_misrepresented_claims",
+    "overall_verdict_shown_correctly",
+    "language_fair_and_neutral",
+    "text_readable",
+    "sources_shown",
+]
+
+
+class CritiqueCheckResult(BaseModel):
+    check: CritiqueCheckName
+    passed: bool
+    notes: str = Field(description="Brief justification for the pass/fail")
+
+
+class CritiqueIssue(BaseModel):
+    slide: str = Field(description="Which slide or card the issue is on, e.g. 'Overall verdict' or 'Claim 2'")
+    timestamp: str = Field(description="Approximate MM:SS in the recording where the issue appears")
+    description: str = Field(description="Specific description of what is wrong and how to fix it")
+
+
+class Critique(BaseModel):
+    checks: list[CritiqueCheckResult]
+    issues: list[CritiqueIssue]
+    approved: bool = Field(description="True only if every check passed and issues is empty")
