@@ -5,5 +5,7 @@ __pycache__/
 venv/
 uploads/*
 !uploads/.gitkeep
+explainers/*
+!explainers/.gitkeep
 .DS_Store
 *.log
