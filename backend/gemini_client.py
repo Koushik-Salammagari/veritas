@@ -16,6 +16,7 @@ from backend.schemas import (
     ExtractedClaim,
     Finding,
     JudgeResult,
+    Verdict,
 )
 
 EXTRACTOR_MODEL = "gemini-4-argon"
@@ -24,6 +25,8 @@ JUDGE_MODEL = "gemini-4-argon"
 EXPLAINER_MODEL = "gemini-4-argon"
 CRITIC_MODEL = "gemini-4-argon"
 FIXER_MODEL = "gemini-4-argon"
+AGENT = "antigravity-preview-09-2026"
+AGENT_UNDERLYING_MODEL = "gemini-4-argon"
 
 CLAIM_EXTRACTION_PROMPT = """Watch this video and extract every factual claim made in it — \
 by speech or on-screen text. A factual claim is something that could be checked against evidence \
@@ -216,6 +219,45 @@ Ground-truth fact-check data (for re-verifying anything you change):
 Current HTML to fix:
 {current_html}"""
 
+AGENT_VERIFICATION_PROMPT_TEMPLATE = """You are running inside a sandboxed Linux environment with code \
+execution, file management, and web access. Complete BOTH tasks below, then write one JSON summary file.
+
+TASK 1 — Render a shareable video:
+The file /workspace/explainer.html is a self-contained, auto-playing HTML animation (pure CSS/JS, no \
+build step). Render it to a shareable MP4:
+1. Install what you need: `pip install playwright && playwright install --with-deps chromium`. Check \
+whether ffmpeg is already available with `which ffmpeg` before trying to install it (e.g. \
+`apt-get update && apt-get install -y ffmpeg` if missing).
+2. Use Playwright to open /workspace/explainer.html headless at 960x540 and record one full playthrough \
+(about 25-30 seconds) using Playwright's built-in video recording (record_video_dir).
+3. Convert the resulting .webm to /workspace/explainer.mp4 with ffmpeg \
+(e.g. `ffmpeg -y -i input.webm -c:v libx264 -pix_fmt yuv420p /workspace/explainer.mp4`).
+4. Confirm /workspace/explainer.mp4 exists and is not 0 bytes.
+
+TASK 2 — Verify sources:
+Below is a list of source citations used in a fact-check, each tied to a specific claim. For EACH one:
+1. Fetch the URL (curl or Python requests, following redirects, with a realistic User-Agent).
+2. Determine whether it loads successfully (a real page, not a 404/error/timeout).
+3. If it loads, read enough of the page content to judge whether it actually supports the specific claim \
+it's cited for (the claim_text is given for context).
+4. Record a status: "verified" (loads AND supports the claim), "broken" (doesn't load, errors, or times \
+out), or "unsupported" (loads fine but the content doesn't actually support the claim).
+
+Sources to verify:
+{sources_json}
+
+When both tasks are complete, write a JSON file to EXACTLY /workspace/result.json with this shape and \
+nothing else in the file:
+{{
+  "video_rendered": true or false,
+  "sources": [
+    {{"claim_index": <int>, "url": "<the exact url given above>", "status": "verified" | "broken" | \
+"unsupported", "notes": "<one brief sentence>"}}
+  ]
+}}
+Include exactly one entry per source listed above, matching claim_index and url exactly. Do not add \
+commentary outside the JSON file."""
+
 _FILE_POLL_INTERVAL_SECONDS = 3
 _FILE_POLL_TIMEOUT_SECONDS = 300
 _INTERACTION_POLL_INTERVAL_SECONDS = 5
@@ -225,11 +267,14 @@ _JUDGE_TIMEOUT_SECONDS = 1200
 _EXPLAINER_TIMEOUT_SECONDS = 1200
 _CRITIC_TIMEOUT_SECONDS = 1200
 _FIXER_TIMEOUT_SECONDS = 1200
+_AGENT_TIMEOUT_SECONDS = 1800
+_AGENT_POLL_INTERVAL_SECONDS = 10
 _MAX_PARALLEL_INVESTIGATIONS = 8
 _MAX_EXPLAINER_SOURCES = 6
 _MAX_RENDER_CRITIQUE_ROUNDS = 3
 _RENDER_WAIT_MS = 28000
 _RENDER_VIEWPORT = {"width": 960, "height": 540}
+_AGENT_WRITE_FILE_MARKER = "EOF_EXPLAINER_HTML_9f3a"
 
 
 def _client() -> genai.Client:
@@ -237,12 +282,17 @@ def _client() -> genai.Client:
     return genai.Client(api_key=api_key, http_options={"timeout": 1200000})
 
 
-def _await_interaction(client: genai.Client, interaction, timeout_seconds: float):
+def _await_interaction(
+    client: genai.Client,
+    interaction,
+    timeout_seconds: float,
+    poll_interval_seconds: float = _INTERACTION_POLL_INTERVAL_SECONDS,
+):
     deadline = time.time() + timeout_seconds
     while interaction.status in ("in_progress", "queued"):
         if time.time() > deadline:
             raise TimeoutError(f"Gemini call timed out after {timeout_seconds}s")
-        time.sleep(_INTERACTION_POLL_INTERVAL_SECONDS)
+        time.sleep(poll_interval_seconds)
         interaction = client.interactions.get(interaction.id)
 
     if interaction.status != "completed":
@@ -562,6 +612,91 @@ def _run_render_critique_fix(
         version += 1
 
     yield {"stage": "loop_done", "versions": versions}
+
+
+def _build_agent_sources_payload(claims: list[Claim], verdicts: list[Verdict]) -> list[dict]:
+    payload = []
+    for verdict in verdicts:
+        claim = claims[verdict.claim_index] if verdict.claim_index < len(claims) else None
+        claim_text = claim.exact_wording if claim else ""
+        for source in verdict.sources:
+            payload.append(
+                {
+                    "claim_index": verdict.claim_index,
+                    "claim_text": claim_text,
+                    "url": source.url,
+                    "title": source.title,
+                }
+            )
+    return payload
+
+
+def run_verification_agent(
+    html_path: str,
+    video_output_path: str,
+    claims: list[Claim],
+    verdicts: list[Verdict],
+) -> dict:
+    """Run the antigravity managed agent to render a shareable MP4 and verify every cited source.
+
+    Saves the MP4 to video_output_path if rendering succeeds. Returns
+    {"video_saved": bool, "sources": [{"claim_index", "url", "title", "status", "notes"}, ...]}.
+    """
+    client = _client()
+    html = Path(html_path).read_text(encoding="utf-8")
+    sources_payload = _build_agent_sources_payload(claims, verdicts)
+
+    write_file_cmd = (
+        f"mkdir -p /workspace && cat > /workspace/explainer.html << '{_AGENT_WRITE_FILE_MARKER}'\n"
+        f"{html}\n{_AGENT_WRITE_FILE_MARKER}\n"
+    )
+    prompt = (
+        "First, run this exact bash command to create the input file (do not modify its contents):\n\n"
+        + write_file_cmd
+        + "\n\n"
+        + AGENT_VERIFICATION_PROMPT_TEMPLATE.format(sources_json=json.dumps(sources_payload, indent=2))
+    )
+
+    interaction = client.interactions.create(
+        agent=AGENT,
+        agent_config={"type": "antigravity", "model": AGENT_UNDERLYING_MODEL},
+        environment="remote",
+        input=prompt,
+        background=True,
+    )
+    interaction = _await_interaction(
+        client, interaction, _AGENT_TIMEOUT_SECONDS, poll_interval_seconds=_AGENT_POLL_INTERVAL_SECONDS
+    )
+    env_id = interaction.environment_id
+
+    result_bytes = client.environments.files.download(environment=env_id, path="/workspace/result.json")
+    result = json.loads(result_bytes)
+
+    video_saved = False
+    if result.get("video_rendered"):
+        try:
+            video_bytes = client.environments.files.download(environment=env_id, path="/workspace/explainer.mp4")
+            Path(video_output_path).write_bytes(video_bytes)
+            video_saved = True
+        except Exception:  # noqa: BLE001
+            video_saved = False
+
+    status_by_key = {(s.get("claim_index"), s.get("url")): s for s in result.get("sources", [])}
+    source_verifications = []
+    for item in sources_payload:
+        key = (item["claim_index"], item["url"])
+        matched = status_by_key.get(key)
+        source_verifications.append(
+            {
+                "claim_index": item["claim_index"],
+                "url": item["url"],
+                "title": item["title"],
+                "status": matched["status"] if matched else "broken",
+                "notes": matched.get("notes", "") if matched else "The agent did not report a result for this source.",
+            }
+        )
+
+    return {"video_saved": video_saved, "sources": source_verifications}
 
 
 def run_pipeline(
