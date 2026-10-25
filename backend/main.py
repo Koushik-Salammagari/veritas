@@ -25,14 +25,8 @@ def index():
     return FileResponse(FRONTEND_DIR / "index.html")
 
 
-def _save_explainer(run_id: str, html: str) -> str:
-    explainer_dir = EXPLAINERS_DIR / run_id
-    explainer_dir.mkdir(parents=True, exist_ok=True)
-    existing_versions = sorted(explainer_dir.glob("v*.html"))
-    next_version = len(existing_versions) + 1
-    explainer_path = explainer_dir / f"v{next_version}.html"
-    explainer_path.write_text(html, encoding="utf-8")
-    return f"/explainers/{run_id}/v{next_version}.html"
+def _explainer_url(run_id: str, filename: str) -> str:
+    return f"/explainers/{run_id}/{filename}"
 
 
 def _stream_analysis(youtube_url: str | None, video: UploadFile | None):
@@ -48,10 +42,16 @@ def _stream_analysis(youtube_url: str | None, video: UploadFile | None):
         else:
             pipeline_kwargs = {"youtube_url": youtube_url}
 
-        for event in run_pipeline(**pipeline_kwargs):
-            if event.get("stage") == "done" and "explainer_html" in event.get("result", {}):
-                html = event["result"].pop("explainer_html")
-                event["result"]["explainer_url"] = _save_explainer(run_id, html)
+        for event in run_pipeline(explainer_dir=EXPLAINERS_DIR / run_id, **pipeline_kwargs):
+            stage = event.get("stage")
+            if stage == "critique_result":
+                event["url"] = _explainer_url(run_id, event["filename"])
+            elif stage == "done":
+                versions = event.get("result", {}).get("versions", [])
+                for version in versions:
+                    version["url"] = _explainer_url(run_id, version["filename"])
+                if versions:
+                    event["result"]["explainer_url"] = versions[-1]["url"]
             yield json.dumps(event) + "\n"
     except Exception as exc:  # noqa: BLE001
         yield json.dumps({"stage": "error", "message": str(exc)}) + "\n"
