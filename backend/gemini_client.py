@@ -108,8 +108,11 @@ source URL that supports your reasoning. If the evidence is weak, missing, or so
 "old footage", "cherry-picked number", "missing context", "fabricated". Leave it null otherwise.
 - explanation is exactly one sentence, about the substance (mention attribution only if it adds \
 necessary nuance).
-- sources: the source URLs (with titles) from the investigator's findings that support your verdict. \
-Must be non-empty for every "false" or "misleading" verdict.
+- sources: the source URLs (with titles) from THAT CLAIM's investigator findings that support your \
+verdict. You MUST copy these exactly from the investigator_sources list given for that claim below — \
+never write a URL from memory or from a different claim's findings. If none of that claim's \
+investigator_sources actually support your verdict, leave sources empty. Must be non-empty for every \
+"false" or "misleading" verdict.
 - claim_index must match the index given for each claim below.
 - occurrence_count greater than 1 means this exact claim was repeated verbatim in the video. Repeated or \
 spliced segments can be a sign of deceptive editing even when the claim's factual content checks out — \
@@ -139,7 +142,7 @@ Editing signals noticed while extracting claims (cuts, repeated segments, overla
 Claims and investigator findings:
 {claims_and_findings_json}"""
 
-EXPLAINER_PROMPT_TEMPLATE = """Generate a single self-contained HTML page that works as a 20-30 second \
+EXPLAINER_PROMPT_TEMPLATE = """Generate a single self-contained HTML page that works as a SHORT, FAST \
 animated explainer of a fact-check report, suitable for sharing (e.g. embedded in a page or shown on a \
 projector).
 
@@ -150,8 +153,8 @@ commentary before or after it.
 external dependency except, if truly needed, a script from cdnjs.cloudflare.com or cdn.jsdelivr.net/npm/ \
 — prefer plain CSS animations and vanilla JS over any library.
 - Auto-playing: the animation must start automatically on page load with no interaction required, and run \
-for about 20 to 30 seconds total before holding on a final summary frame (looping back to the start after \
-a pause is fine).
+for about 14 to 18 seconds total before holding on a final summary frame (looping back to the start after \
+a pause is fine). Keep per-slide dwell time short (2.5-3.5s) so the whole thing stays brisk.
 - Clean, readable design: dark background, large legible type, generous spacing, one idea on screen at a \
 time (a slideshow-style sequence with smooth CSS transitions between frames). Use color to communicate \
 verdicts — green for true/accurate, orange for misleading, red for false, gray for unverifiable — \
@@ -160,16 +163,18 @@ consistently throughout.
 
 The animation sequence should show, in this order:
 1. The video's overall verdict as a bold title card, with the misleading techniques used, if any.
-2. Each key claim with its individual verdict badge and a one-line reason (cap this at the 5 most \
-important claims if there are more). The verdict badge is about the substance of the claim, not whether \
-someone said it; if a claim has a non-null attribution, show a small separate "attribution: accurate" or \
-"attribution: inaccurate" tag next to it.
+2. Each key claim with its individual verdict badge and a one-line reason (cap this at the 3 most \
+important claims if there are more — prefer the ones that drive the overall verdict). The verdict badge \
+is about the substance of the claim, not whether someone said it; if a claim has a non-null attribution, \
+show a small separate "attribution: accurate" or "attribution: inaccurate" tag next to it.
 3. If the video is misleading or false, a card explaining how it misleads, using the techniques and \
 explanations given.
-4. A "What actually happened" card with the true story in plain language.
-5. A final card listing the main sources (title and domain, not full URLs) used to verify the claims.
+4. A "What actually happened" card with the true story in plain language, kept to 2-3 sentences.
+5. A final card listing the main sources (title and domain, not full URLs) used to verify the claims, \
+capped at 4 sources.
 
-Here is the fact-check data to visualize:
+Keep this short and simple — fewer slides, less text per slide, and a simple CSS transition (opacity/\
+transform fade) are all fine. Here is the fact-check data to visualize:
 {data_json}"""
 
 CRITIC_PROMPT_TEMPLATE = """You are a strict critic reviewing a short animated video explainer generated \
@@ -204,8 +209,8 @@ Ground-truth fact-check data:
 FIXER_PROMPT_TEMPLATE = """You previously generated the self-contained HTML explainer below. A strict \
 critic reviewed a recording of it and found the following issues. Regenerate a complete, corrected \
 version of the HTML page that fixes every issue while keeping the same overall design, structure, and \
-output requirements (self-contained, auto-playing, 20-30 seconds, dark theme, verdict colors, slide \
-sequence) as the original.
+output requirements (self-contained, auto-playing, 14-18 seconds total, dark theme, verdict colors, \
+slide sequence) as the original. Keep it short — do not add slides or length while fixing issues.
 
 Output ONLY the raw corrected HTML document, starting with <!DOCTYPE html>. No markdown, no code fences, \
 no commentary.
@@ -283,9 +288,9 @@ _FIXER_TIMEOUT_SECONDS = 1200
 _AGENT_TIMEOUT_SECONDS = 1800
 _AGENT_POLL_INTERVAL_SECONDS = 10
 _MAX_PARALLEL_INVESTIGATIONS = 8
-_MAX_EXPLAINER_SOURCES = 6
-_MAX_RENDER_CRITIQUE_ROUNDS = 3
-_RENDER_WAIT_MS = 28000
+_MAX_EXPLAINER_SOURCES = 4
+_MAX_RENDER_CRITIQUE_ROUNDS = 2
+_RENDER_WAIT_MS = 19000
 _RENDER_VIEWPORT = {"width": 960, "height": 540}
 _AGENT_WRITE_FILE_MARKER = "EOF_EXPLAINER_HTML_9f3a"
 
@@ -352,7 +357,7 @@ def _extract_claims(client: genai.Client, video_content: dict) -> ClaimExtractio
             "mime_type": "application/json",
             "schema": ClaimExtractionResult.model_json_schema(),
         },
-        generation_config={"thinking_level": "medium"},
+        generation_config={"thinking_level": "low"},
         background=True,
     )
     interaction = _await_interaction(client, interaction, _EXTRACTION_TIMEOUT_SECONDS)
@@ -402,6 +407,7 @@ def _investigate_claim(client: genai.Client, claim: Claim) -> Finding:
             "mime_type": "application/json",
             "schema": Finding.model_json_schema(),
         },
+        generation_config={"thinking_level": "low"},
     )
     interaction = _await_interaction(client, interaction, _INVESTIGATION_TIMEOUT_SECONDS)
     return Finding.model_validate(_parse_json_output(interaction))
@@ -438,13 +444,21 @@ def _judge_claims(
             "mime_type": "application/json",
             "schema": JudgeResult.model_json_schema(),
         },
-        generation_config={"thinking_level": "high"},
+        generation_config={"thinking_level": "medium"},
         background=True,
     )
     interaction = _await_interaction(client, interaction, _JUDGE_TIMEOUT_SECONDS)
     result = JudgeResult.model_validate(_parse_json_output(interaction))
 
-    # Safety net for the "never false/misleading without a source" rule.
+    # Real sources only: drop any cited URL that isn't verbatim in that claim's own investigator
+    # findings, closing the door on the model citing a URL from memory or from another claim.
+    for verdict in result.verdicts:
+        finding = findings[verdict.claim_index] if verdict.claim_index < len(findings) else None
+        allowed_urls = {s.url for s in finding.sources} if finding else set()
+        verdict.sources = [s for s in verdict.sources if s.url in allowed_urls]
+
+    # Safety net for the "never false/misleading without a source" rule — re-checked AFTER the
+    # filter above, since stripping a fabricated URL can leave a false/misleading verdict bare.
     for verdict in result.verdicts:
         if verdict.verdict in ("false", "misleading") and not verdict.sources:
             verdict.verdict = "unverifiable"
@@ -496,7 +510,7 @@ def _generate_explainer_html(client: genai.Client, claims: list[Claim], judge_re
     interaction = client.interactions.create(
         model=EXPLAINER_MODEL,
         input=prompt,
-        generation_config={"thinking_level": "medium"},
+        generation_config={"thinking_level": "low"},
         background=True,
     )
     interaction = _await_interaction(client, interaction, _EXPLAINER_TIMEOUT_SECONDS)
@@ -547,7 +561,7 @@ def _critique_explainer(
             "mime_type": "application/json",
             "schema": Critique.model_json_schema(),
         },
-        generation_config={"thinking_level": "high"},
+        generation_config={"thinking_level": "medium"},
         background=True,
     )
     interaction = _await_interaction(client, interaction, _CRITIC_TIMEOUT_SECONDS)
@@ -570,7 +584,7 @@ def _fix_explainer(
     interaction = client.interactions.create(
         model=FIXER_MODEL,
         input=prompt,
-        generation_config={"thinking_level": "medium"},
+        generation_config={"thinking_level": "low"},
         background=True,
     )
     interaction = _await_interaction(client, interaction, _FIXER_TIMEOUT_SECONDS)
@@ -767,11 +781,7 @@ def run_pipeline(
 
     yield {"stage": "judging"}
     judge_result = _judge_claims(client, claims, findings, extraction.editing_signals)
-    yield {
-        "stage": "judged",
-        "video_verdict": judge_result.video_verdict.verdict,
-        "claims_judged": len(judge_result.verdicts),
-    }
+    yield {"stage": "judged", "result": judge_result.model_dump()}
 
     yield {"stage": "generating_explainer"}
     explainer_html = _generate_explainer_html(client, claims, judge_result)
